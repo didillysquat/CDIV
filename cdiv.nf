@@ -206,19 +206,50 @@ process merge_pcr_reads_18S{
     tuple val(sample_id), path(fasta_fwd), path(names_fwd), path(fasta_rev), path(names_rev) from ch_merge_pcrs_18S_fwd.join(ch_merge_pcr_18S_rev)
 
     output:
-    tuple val(sample_id), path("${sample_id}.fasta"), path("${sample_id}.count"), path("${sample_id}.summary.logfile") into ch_merge_pcr_reads_18S
+    tuple val(sample_id), path("${sample_id}.fasta"), path("${sample_id}.count"), path("${sample_id}.summary.logfile") into ch_merge_pcr_reads_18S_out
+    tuple val(sample_id), path("${sample_id}.fasta"), path("${sample_id}.count") into ch_make_mmseqs_query_dbs
 
     script:
     """
     cat $fasta_fwd $fasta_rev > ${sample_id}.fasta
     cat $names_fwd $names_rev > ${sample_id}.names
-    mothur "#count.seqs(name=${sample_id}.names)"
+    mothur "#count.seqs(name=${sample_id}.names, processors=${task.cpus})"
     rm mothur.*.logfile
-    mothur "#summary.seqs(fasta=${sample_id}.fasta, name=${sample_id}.names)"
+    mothur "#summary.seqs(fasta=${sample_id}.fasta, name=${sample_id}.names, processors=${task.cpus})"
     mv mothur.*.logfile ${sample_id}.summary.logfile
     mv ${sample_id}.count_table ${sample_id}.count
     """
-
-
-
 }
+// Channel.fromPath("${params.silva_db_path}{.,_}*").collect().view()
+// silva_indices = Channel.fromPath("${params.silva_db_path}{.,_}*").collect().map{[it]}
+// silva_indices.combine(Channel.fromPath(params.silva_db_path)).view()
+// silva_indices.combine(ch_make_mmseqs_query_dbs)
+// ch_make_mmseqs_query_dbs.combine(Channel.fromPath(params.silva_db_path).combine(silva_indices)).view()
+
+// Create mmseqs db of the fasta files
+process make_query_dbs{
+    tag {sample_id}
+    container "soedinglab/mmseqs2:latest"
+    cpus 45
+    if (workflow.containerEngine == 'docker'){
+        containerOptions "-v ${params.tmp_parent_dir}:${params.tmp_parent_dir}"
+    }
+
+    input:
+    tuple val(sample_id), path(fasta), path(count), path(silva_db_base), path(silva_db_indices) from ch_make_mmseqs_query_dbs.combine(Channel.fromPath(params.silva_db_path)).combine(Channel.fromPath("${params.silva_db_path}{.,_}*").collect().map{[it]})
+
+    output:
+    tuple val(sample_id), path("${sample_id}.queryDB") into ch_mmseqs_tax_search
+
+    script:
+    """
+    mmseqs createdb ${fasta} ${sample_id}.queryDB
+    rm -r ${params.tmp_parent_dir}/${sample_id} || true
+    mmseqs taxonomy --threads ${task.cpus} --search-type 3 --tax-lineage 1 ${sample_id}.queryDB $silva_db_base ${sample_id}.taxonomyResult ${params.tmp_parent_dir}/${sample_id}
+    rm -r ${params.tmp_parent_dir}/${sample_id}
+    """
+}
+
+// TODO mmseqs against the SSU db
+
+// TODO mmseqs against the nt db
