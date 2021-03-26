@@ -135,7 +135,7 @@ process pcr_18S_fwd{
     tuple val(sample_id), path(fasta), path(names), path(oligos) from ch_pcr_18S.combine(ch_18S_oligos)
 
     output:
-    tuple val(sample_id), path("${sample_id}.contigs.unique.pcr.unique.fasta"), path("${sample_id}.contigs.unique.pcr.names") into ch_pcr_summary_18S_fwd
+    tuple val(sample_id), path("${sample_id}.contigs.unique.pcr.unique.fasta"), path("${sample_id}.contigs.unique.pcr.names") into ch_pcr_summary_18S_fwd,ch_merge_pcrs_18S_fwd
     tuple val(sample_id), path("${sample_id}.contigs.unique.scrap.pcr.fasta"), path(names) into ch_pcr_18S_rev
 
     script:
@@ -160,7 +160,7 @@ process pcr_18S_rev{
     tuple val(sample_id), path(fasta), path(names), path(oligos) from ch_pcr_18S_rev.combine(ch_18S_rc_oligos)
 
     output:
-    tuple val(sample_id), path("${sample_id}.contigs.unique.scrap.pcr.clean.pcr.unique.fasta"), path("${sample_id}.contigs.unique.scrap.pcr.clean.pcr.names") into ch_pcr_summary_18S_rev
+    tuple val(sample_id), path("${sample_id}.contigs.unique.scrap.pcr.clean.pcr.unique.fasta"), path("${sample_id}.contigs.unique.scrap.pcr.clean.pcr.names") into ch_pcr_summary_18S_rev,ch_merge_pcr_18S_rev
 
     script:
     """
@@ -172,28 +172,6 @@ process pcr_18S_rev{
     mothur "#unique.seqs(fasta=${sample_id}.contigs.unique.scrap.pcr.clean.pcr.fasta, name=${sample_id}.contigs.pcr.rc.names)"
     """
 }
-
-// // PCR step was loosing about 50% of the reads and when I blasted the scrap sequences
-// // they were giving good blast results
-// // TODO, we need to do the rev comp too. Just rev comp the primers and run on the scrap
-// process pcr_summary_18S{
-//     tag {sample_id}
-//     container "didillysquat/mothur:v1.45.0-ubuntu_20210225"
-//     cpus 1
-//     publishDir "pcr_summary", mode: "copy"
-
-//     input:
-//     tuple val(sample_id_fwd), path(fasta_fwd), path(names_fwd) from ch_pcr_summary_18S_fwd
-
-//     output:
-//     tuple val(sample_id_fwd), path("${sample_id_fwd}.contigs.unique.pcr.summary"), path("${sample_id_fwd}.contigs.unique.pcr.summary.logfile") into ch_pcr_summary_18S_out
-
-//     script:
-//     """
-//     mothur "#summary.seqs(fasta=${fasta_fwd}, name=${names_fwd}, processors=${task.cpus})"
-//     mv *.logfile ${sample_id_fwd}.contigs.unique.pcr.summary.logfile
-//     """
-// }
 
 process pcr_summary_18S{
     tag {sample_id}
@@ -216,4 +194,31 @@ process pcr_summary_18S{
     mothur "#summary.seqs(fasta=${fasta_rev}, name=${names_rev}, processors=${task.cpus})"
     mv mothur.*.logfile ${sample_id}.contigs.unique.scrap.pcr.clean.pcr.unique.summary.logfile
     """
+}
+
+process merge_pcr_reads_18S{
+    tag {sample_id}
+    container "didillysquat/mothur:v1.45.0-ubuntu_20210225"
+    cpus 1
+    publishDir "post_pcr", mode: "copy"
+    
+    input:
+    tuple val(sample_id), path(fasta_fwd), path(names_fwd), path(fasta_rev), path(names_rev) from ch_merge_pcrs_18S_fwd.join(ch_merge_pcr_18S_rev)
+
+    output:
+    tuple val(sample_id), path("${sample_id}.fasta"), path("${sample_id}.count"), path("${sample_id}.summary.logfile") into ch_merge_pcr_reads_18S
+
+    script:
+    """
+    cat $fasta_fwd $fasta_rev > ${sample_id}.fasta
+    cat $names_fwd $names_rev > ${sample_id}.names
+    mothur "#count.seqs(name=${sample_id}.names)"
+    rm mothur.*.logfile
+    mothur "#summary.seqs(fasta=${sample_id}.fasta, name=${sample_id}.names)"
+    mv mothur.*.logfile ${sample_id}.summary.logfile
+    mv ${sample_id}.count_table ${sample_id}.count
+    """
+
+
+
 }

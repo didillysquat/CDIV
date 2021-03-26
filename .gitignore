@@ -1,1 +1,10 @@
 inputs/*
+.nextflow*
+fwd_pcr_out
+oligo.oligo
+pcr_summary/
+rev_pcr_out/
+unique_contig_summary/
+work
+post_pcr/
+READ_ME_FOR_BEN
