@@ -227,7 +227,7 @@ process merge_pcr_reads_18S{
 // ch_make_mmseqs_query_dbs.combine(Channel.fromPath(params.silva_db_path).combine(silva_indices)).view()
 
 // Create mmseqs db of the fasta files
-process make_query_dbs{
+process make_mmseqs_tax_table{
     tag {sample_id}
     container "soedinglab/mmseqs2:latest"
     cpus 45
@@ -239,15 +239,67 @@ process make_query_dbs{
     tuple val(sample_id), path(fasta), path(count), path(silva_db_base), path(silva_db_indices) from ch_make_mmseqs_query_dbs.combine(Channel.fromPath(params.silva_db_path)).combine(Channel.fromPath("${params.silva_db_path}{.,_}*").collect().map{[it]})
 
     output:
-    tuple val(sample_id), path("${sample_id}.queryDB") into ch_mmseqs_tax_search
+    tuple val(sample_id), path(count), path("${sample_id}.taxonomyResult.tsv") into ch_make_krona_input
 
     script:
     """
+    # Create the mmseqs query db
     mmseqs createdb ${fasta} ${sample_id}.queryDB
+    # Remove the temporary directory if it already exists
     rm -r ${params.tmp_parent_dir}/${sample_id} || true
+    # Do the taxonomy search
     mmseqs taxonomy --threads ${task.cpus} --search-type 3 --tax-lineage 1 ${sample_id}.queryDB $silva_db_base ${sample_id}.taxonomyResult ${params.tmp_parent_dir}/${sample_id}
+    # Clean Up: Remove the temp dir
     rm -r ${params.tmp_parent_dir}/${sample_id}
+    # Create the taxonomy tsv
+    mmseqs createtsv ${sample_id}.queryDB ${sample_id}.taxonomyResult ${sample_id}.taxonomyResult.tsv
     """
+}
+
+// The awk that ships with many of the docker images is mawk
+// and the for loops are not working properly so I have created a
+// very basic "gawk" image to do the awk commands in.
+process make_krona_input{
+    tag {sample_id}
+    container "didillysquat/gawk:v5.0.1-ubuntu_20210225"
+    if (workflow.containerEngine == 'docker'){
+            containerOptions '-u $(id -u):$(id -g)'
+        }
+    cpus 1
+    
+    input:
+    tuple val(sample_id), path(count_table), path(tax_table) from ch_make_krona_input
+
+    output:
+    tuple val(sample_id), path("${sample_id}.krona.input.txt") into ch_make_krona_plot
+    
+    shell:
+    '''
+    # Use the taxonomy tsv and the count file to create input for Krona figure
+    awk 'BEGIN{FS="\t"} NR==FNR {if(NR>1){abund_map[$1]=$2; next}} {new_tax=""; split($5, tax_a, ";"); for(i=1; i<=length(tax_a); i++){if(substr(tax_a[i],1,1)!="-"){new_tax=new_tax "\t" tax_a[i]};}; if(new_tax!=""){tax_map[new_tax]+=abund_map[$1]};} END {for(tax in tax_map){split_tax = tax; gsub(";","\t", split_tax); print tax_map[tax] "\t" split_tax;}}' !{count_table} !{tax_table} > !{sample_id}.krona.input.txt
+    '''
+}
+
+process make_krona_plot{
+    tag {sample_id}
+    container "biocontainers/krona:v2.7.1_cv1"
+    if (workflow.containerEngine == 'docker'){
+            containerOptions '-u $(id -u):$(id -g)'
+        }
+    cpus 1
+    
+    input:
+    tuple val(sample_id), path(krona_input) from ch_make_krona_plot
+
+    output:
+    tuple val(sample_id), path("${sample_id}.krona.html") into ch_make_krona_out
+    
+    script:
+    """
+    # Make the Krona figure using the input
+    ktImportText ${krona_input}
+    mv text.krona.html ${sample_id}.krona.html
+    """    
 }
 
 // TODO mmseqs against the SSU db
