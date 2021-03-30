@@ -227,6 +227,8 @@ process merge_pcr_reads_18S{
 // ch_make_mmseqs_query_dbs.combine(Channel.fromPath(params.silva_db_path).combine(silva_indices)).view()
 
 // Create mmseqs db of the fasta files
+// TODO we need to check that all of the fasta sequences are given an assignment
+// and if there are any that are not then we need to put these as unclassified
 process make_mmseqs_tax_table{
     tag {sample_id}
     container "soedinglab/mmseqs2:latest"
@@ -234,9 +236,10 @@ process make_mmseqs_tax_table{
     if (workflow.containerEngine == 'docker'){
         containerOptions "-v ${params.tmp_parent_dir}:${params.tmp_parent_dir}"
     }
+    publishDir "taxonomy_tables/${sample_id}/", mode: "copy"
 
     input:
-    tuple val(sample_id), path(fasta), path(count), path(silva_db_base), path(silva_db_indices) from ch_make_mmseqs_query_dbs.combine(Channel.fromPath(params.silva_db_path)).combine(Channel.fromPath("${params.silva_db_path}{.,_}*").collect().map{[it]})
+    tuple val(sample_id), path(fasta), path(count), path(silva_db_base), path(silva_db_indices) from ch_make_mmseqs_query_dbs.combine(Channel.fromPath(params.nt_db_path)).combine(Channel.fromPath("${params.nt_db_path}{.,_}*").collect().map{[it]})
 
     output:
     tuple val(sample_id), path(count), path("${sample_id}.taxonomyResult.tsv") into ch_make_krona_input
@@ -259,6 +262,8 @@ process make_mmseqs_tax_table{
 // The awk that ships with many of the docker images is mawk
 // and the for loops are not working properly so I have created a
 // very basic "gawk" image to do the awk commands in.
+// For any sequeneces that weren't mapped, we want to summate them and add
+// them to the end of the krona input file.
 process make_krona_input{
     tag {sample_id}
     container "didillysquat/gawk:v5.0.1-ubuntu_20210225"
@@ -266,6 +271,7 @@ process make_krona_input{
             containerOptions '-u $(id -u):$(id -g)'
         }
     cpus 1
+    publishDir "krona_input/${sample_id}/", mode: "copy"
     
     input:
     tuple val(sample_id), path(count_table), path(tax_table) from ch_make_krona_input
@@ -277,6 +283,8 @@ process make_krona_input{
     '''
     # Use the taxonomy tsv and the count file to create input for Krona figure
     awk 'BEGIN{FS="\t"} NR==FNR {if(NR>1){abund_map[$1]=$2; next}} {new_tax=""; split($5, tax_a, ";"); for(i=1; i<=length(tax_a); i++){if(substr(tax_a[i],1,1)!="-"){new_tax=new_tax "\t" tax_a[i]};}; if(new_tax!=""){tax_map[new_tax]+=abund_map[$1]};} END {for(tax in tax_map){split_tax = tax; gsub(";","\t", split_tax); print tax_map[tax] "\t" split_tax;}}' !{count_table} !{tax_table} > !{sample_id}.krona.input.txt
+    # Check to see if there are non-matched sequences and summate these and add to end of input if so
+    awk 'BEGIN{FS="\t"; i=0; unmatched=0} NR==FNR {matched_array[$1]=i; i++; next;}{if(FNR>1){if(!($1 in matched_array)){unmatched+=$2}}} END {print unmatched}' !{tax_table} !{count_table} >> !{sample_id}.krona.input.txt
     '''
 }
 
@@ -287,6 +295,7 @@ process make_krona_plot{
             containerOptions '-u $(id -u):$(id -g)'
         }
     cpus 1
+    publishDir "krona_output/${sample_id}/", mode: "copy"
     
     input:
     tuple val(sample_id), path(krona_input) from ch_make_krona_plot
@@ -301,7 +310,3 @@ process make_krona_plot{
     mv text.krona.html ${sample_id}.krona.html
     """    
 }
-
-// TODO mmseqs against the SSU db
-
-// TODO mmseqs against the nt db
