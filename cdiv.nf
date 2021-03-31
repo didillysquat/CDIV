@@ -4,7 +4,7 @@
 import static com.xlson.groovycsv.CsvParser.parseCsv
 
 params.input_seq_dir = "/home/humebc/projects/tara/cdiv/inputs/seq_download"
-params.tn_map_csv_path = "/home/humebc/projects/tara/cdiv/inputs/tn_map.csv"
+params.tn_map_csv_path = "/home/humebc/projects/tara/cdiv/inputs/tn_map_I05.csv"
 
 // Setup up the three input channels
 // This will create a channel for each marker that is a list of tuples where the first
@@ -77,7 +77,7 @@ process make_contigs_18S{
     cpus 1
 
     input:
-    tuple val(sample_id), path(reads) from ch_18S_input.take(4)
+    tuple val(sample_id), path(reads) from ch_18S_input
 
     output:
     tuple val(sample_id), path("${sample_id}.contigs.fasta") into ch_make_contigs_unique
@@ -232,7 +232,7 @@ process merge_pcr_reads_18S{
 process make_mmseqs_tax_table{
     tag {sample_id}
     container "soedinglab/mmseqs2:latest"
-    cpus 45
+    cpus 3
     if (workflow.containerEngine == 'docker'){
         containerOptions "-v ${params.tmp_parent_dir}:${params.tmp_parent_dir}"
     }
@@ -277,7 +277,7 @@ process make_krona_input{
     tuple val(sample_id), path(count_table), path(tax_table) from ch_make_krona_input
 
     output:
-    tuple val(sample_id), path("${sample_id}.krona.input.txt") into ch_make_krona_plot
+    tuple val(sample_id), path("${sample_id}.krona.input.txt") into ch_make_krona_plot,ch_make_summary_krona_inputs
     
     shell:
     '''
@@ -309,4 +309,33 @@ process make_krona_plot{
     ktImportText ${krona_input}
     mv text.krona.html ${sample_id}.krona.html
     """    
+}
+
+// Make kronas that uses per sample normalised abundances
+// Make one that is just cnidaria broken down
+// Make one that is split into cnidaria, symbiodiniaceae and other
+process make_multi_sample_host_krona{
+    cpus 1
+    publishDir "krona_summaries/", mode: "copy"
+
+    input:
+    path(krona_input) from ch_make_summary_krona_inputs.collect{it[1]}
+
+    output:
+    tuple path("cnidaria.krona.input.txt"), path("categories.krona.input.txt") into ch_make_summary_krona_plots
+
+    shell:
+    '''
+    # Because krona automatically summates lines that are the same
+    # We can simply cat together all of the krona inputs once
+    # they have been per sample normalised
+    # TODO per sample, do normalisation, filter into cnidarian and three categories
+    for KINPUT in *krona.input.txt
+    do
+    # Pull out the most abundant cnidarian sequence and give it value of 1
+    awk 'BEGIN{FS="\t";big=0;} NR==FNR {seq_tot+=$1; next;} {if(match($0, /p_Cnidaria/)){if($1/seq_tot > big){big=$1/seq_tot; new_string=1; for(i=2; i<=NF; i++){new_string = new_string "\t" $i}};}} END{print new_string >> "cnidaria.krona.input.txt"}' $KINPUT $KINPUT
+    # Categorize into Cnidaria, Symbiodiniaceae, Other
+    awk 'BEGIN{FS="\t"} NR==FNR {seq_tot+=$1; next;} {if(match($0, /p_Cnidaria/)){new_string=$1/seq_tot "\tp_Cnidaria"}else if(match($0, /f_Symbiodiniaceae/)){new_string=$1/seq_tot "\tf_Symbiodiniaceae"}else{new_string=$1/seq_tot "\tOther"}; print new_string >> "categories.krona.input.txt";}' $KINPUT $KINPUT
+    done
+    '''
 }
