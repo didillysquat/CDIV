@@ -8,3 +8,8 @@ unique_contig_summary/
 work
 post_pcr/
 READ_ME_FOR_BEN
+krona_input/
+krona*
+taxonomy_tables
+testing_ark
+testing_awk

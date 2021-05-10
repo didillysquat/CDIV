@@ -4,7 +4,7 @@
 import static com.xlson.groovycsv.CsvParser.parseCsv
 
 params.input_seq_dir = "/home/humebc/projects/tara/cdiv/inputs/seq_download"
-params.tn_map_csv_path = "/home/humebc/projects/tara/cdiv/inputs/tn_map_I05.csv"
+params.tn_map_csv_path = "/home/humebc/projects/tara/cdiv/inputs/tn_map.csv"
 
 // Setup up the three input channels
 // This will create a channel for each marker that is a list of tuples where the first
@@ -220,26 +220,23 @@ process merge_pcr_reads_18S{
     mv ${sample_id}.count_table ${sample_id}.count
     """
 }
-// Channel.fromPath("${params.silva_db_path}{.,_}*").collect().view()
-// silva_indices = Channel.fromPath("${params.silva_db_path}{.,_}*").collect().map{[it]}
-// silva_indices.combine(Channel.fromPath(params.silva_db_path)).view()
-// silva_indices.combine(ch_make_mmseqs_query_dbs)
-// ch_make_mmseqs_query_dbs.combine(Channel.fromPath(params.silva_db_path).combine(silva_indices)).view()
 
 // Create mmseqs db of the fasta files
-// TODO we need to check that all of the fasta sequences are given an assignment
-// and if there are any that are not then we need to put these as unclassified
+// This is very memory hungry. Memory consumption is estimated at 75G per search, but the below parameters
+// (memory 80G and cpus 20) seems to be working well
+// htop shows 80% CPU and 615G memory.
 process make_mmseqs_tax_table{
     tag {sample_id}
     container "soedinglab/mmseqs2:latest"
-    cpus 3
+    cpus 20
+    memory "80G"
     if (workflow.containerEngine == 'docker'){
         containerOptions "-v ${params.tmp_parent_dir}:${params.tmp_parent_dir}"
     }
     publishDir "taxonomy_tables/${sample_id}/", mode: "copy"
 
     input:
-    tuple val(sample_id), path(fasta), path(count), path(silva_db_base), path(silva_db_indices) from ch_make_mmseqs_query_dbs.combine(Channel.fromPath(params.nt_db_path)).combine(Channel.fromPath("${params.nt_db_path}{.,_}*").collect().map{[it]})
+    tuple val(sample_id), path(fasta), path(count), path(silva_db_base), path(silva_db_indices) from ch_make_mmseqs_query_dbs.combine(Channel.fromPath(params.nt_18S_path)).combine(Channel.fromPath("${params.nt_18S_path}{.,_}*").collect().map{[it]})
 
     output:
     tuple val(sample_id), path(count), path("${sample_id}.taxonomyResult.tsv") into ch_make_krona_input
@@ -312,8 +309,10 @@ process make_krona_plot{
 }
 
 // Make kronas that uses per sample normalised abundances
-// Make one that is just cnidaria broken down
-// Make one that is split into cnidaria, symbiodiniaceae and other
+// Make one that is just cnidaria broken down. For this one we only keep the most abundant p_Cnidaria sequence per sample. We give this a value of 1.
+// As such the output krona plot esentially gives a split of the taxa as a sample count.
+// Make one that is split into cnidaria, symbiodiniaceae and other. For this one we have done a per sample normalisation and added up these realtive abundances
+// As such the output gives a total sequence abundance of the given taxa groups across the whole dataset.
 process make_multi_sample_host_krona{
     cpus 1
     publishDir "krona_summaries/", mode: "copy"
@@ -338,4 +337,29 @@ process make_multi_sample_host_krona{
     awk 'BEGIN{FS="\t"} NR==FNR {seq_tot+=$1; next;} {if(match($0, /p_Cnidaria/)){new_string=$1/seq_tot "\tp_Cnidaria"}else if(match($0, /f_Symbiodiniaceae/)){new_string=$1/seq_tot "\tf_Symbiodiniaceae"}else{new_string=$1/seq_tot "\tOther"}; print new_string >> "categories.krona.input.txt";}' $KINPUT $KINPUT
     done
     '''
+}
+
+process make_krona_summary_plots{
+    tag {sample_id}
+    container "biocontainers/krona:v2.7.1_cv1"
+    if (workflow.containerEngine == 'docker'){
+            containerOptions '-u $(id -u):$(id -g)'
+        }
+    cpus 1
+    publishDir "krona_summaries", mode: "copy"
+    
+    input:
+    tuple path(cnidarian_input), path(category_input) from ch_make_summary_krona_plots
+
+    output:
+    tuple path("cnidaria.krona.html"), path("categories.krona.html") into ch_make_krona_summary_out
+    
+    script:
+    """
+    # Make the Krona figure using the input
+    ktImportText ${cnidarian_input}
+    mv text.krona.html cnidaria.krona.html
+    ktImportText ${category_input}
+    mv text.krona.html categories.krona.html
+    """    
 }
