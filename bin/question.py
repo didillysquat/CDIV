@@ -120,6 +120,7 @@ class Questions:
         haplo_df = pd.DataFrame(index=sample_list)
         haplo_df["maj_seq"] = [sample_to_maj_seq_dict[_] for _ in sample_list]
         haplo_df["tax_str"] = [sample_dict[_][sample_to_maj_seq_name_dict[_]][4] for _ in sample_list]
+        haplo_df.to_csv(os.path.join(self.resource_path, "18S.haplotype.df.csv"))
 
         # We will also want to make a phylogenetic tree based on the maj 18S sequences
         # We will output a fasta that has the abundance of each of the samples built into its name
@@ -182,6 +183,90 @@ class Questions:
 
         # In general there are a lot of host sequences in most samples. The samples with the lowest rel abund maj seq have much fewer sequences though.
         # I think it will likely be a case that we call these warning samples and try to examine them by eye. We can also check to see if there is taxonomic
-        # agreement of the sequences within these samples. Another good 
+        # agreement of the sequences within these samples.
+
+        # Another check that we will do is to look at the average pairwise distance between unique distances and see if there are any that stand out. We would
+        # expect there to be a relatively low pairwise distance.
+        # We should output a fasta that contains all sequences detected and we'll need to keep a track of which sequences relate to which sequence names
+        # Then we can do the pairwise distance caluclation, including alignment, outside of this script and read it back in.
+        # There are 9000000 unique sequences. I don't think that pairwise calculations are going to be possible.
+        
+        # # Dict for looking up which seq represents
+        # seq_name_to_rep_seq_name_dict = {}
+        # sequence_to_rep_seq_name_dict = {}
+        # unique_seq_list = set()
+        # # Total seq list (to make sure that all sequence names are unique). We will set it once complete and check that the lengths are the same
+        # total_seq_name_list = []
+        # for sample, sub_dict in sample_dict.items():
+        #     print(f"Sample {sample}")
+        #     for seq_name, tup in sub_dict.items():
+        #         sequence = tup[3]
+        #         try:
+        #             # Then we have already come across this sequence
+        #             rep_seq_name = sequence_to_rep_seq_name_dict[sequence]
+        #             seq_name_to_rep_seq_name_dict[seq_name] = rep_seq_name
+        #             total_seq_name_list.append(seq_name)
+        #         except KeyError:
+        #             # Then this is a new seq
+        #             unique_seq_list.add(sequence)
+        #             sequence_to_rep_seq_name_dict[sequence] = seq_name
+        #             seq_name_to_rep_seq_name_dict[seq_name] = seq_name
+        #             total_seq_name_list.append(seq_name)
+        # # here we have it all populated
+        # pickle.dump(seq_name_to_rep_seq_name_dict, open(os.path.join(self.resource_path, "seq_name_to_rep_seq_name_dict.p"), "wb"))
+        # pickle.dump(sequence_to_rep_seq_name_dict, open(os.path.join(self.resource_path, "sequence_to_rep_seq_name_dict.p"), "wb"))
+        # pickle.dump(unique_seq_list, open(os.path.join(self.resource_path, "unique_seq_list.p"), "wb"))
+        # pickle.dump(total_seq_name_list, open(os.path.join(self.resource_path, "total_seq_name_list.p"), "wb"))
+
+        # TODO a really cool figure to do would be to look at the total number of unique squences cummulatively going in order from
+        # of islands and then reefs within islands to see how it increases and whether we get close to a saturation
+        # We can do this by going in the correct sample order and then going through each sequene and checking to see if we've already come across it
+        meta_df = pd.read_csv("/home/humebc/projects/tara/cdiv/inputs/tn_map.csv")
+        meta_df = meta_df[meta_df["primers"].str.contains("18S")]
+        meta_df.index = [f"TARA_{_}" for _ in list(meta_df["barcode"])]
+        meta_df = meta_df.sort_values(["island", "site"], ascending = (True, True))
+        # This code works but takes some time to compute
+        # unique_seqs = set()
+        # unique_count = 0
+        # cumulative_tot = []
+        # for sample in meta_df.index:
+        #     print(f"{sample}")
+        #     for seq, tup in sample_dict[sample].items():
+        #         if tup[3] in unique_seqs:
+        #             cumulative_tot.append(unique_count)
+        #         else:
+        #             unique_seqs.add(tup[3])
+        #             unique_count += 1
+        #             cumulative_tot.append(unique_count)
+
+        # fig, ax = plt.subplots(nrows=1, ncols=1)
+        # ax.plot(range(len(cumulative_tot)), cumulative_tot, 'b-', linewidth=0.5)
+        # ax.set_ylabel("cummulative unique 18S seqs")
+        # ax.set_xlabel("number of sequences")
+        # plt.savefig(os.path.join(self.fig_dir, f"18S.novel.seqs.svg"))
+        # plt.savefig(os.path.join(self.fig_dir, f"18S.novel.seqs.png"), dpi=600)
+        # plt.close()
+
+
+        unique_seqs = set()
+        unique_count = 0
+        cumulative_tot = []
+        for sample in meta_df.index:
+            seq = sample_to_maj_seq_dict[sample]
+            if seq in unique_seqs:
+                cumulative_tot.append(unique_count)
+            else:
+                unique_seqs.add(seq)
+                unique_count += 1
+                cumulative_tot.append(unique_count)
+
+        fig, ax = plt.subplots(nrows=1, ncols=1)
+        ax.plot(range(len(cumulative_tot)), cumulative_tot, 'b-', linewidth=0.5)
+        ax.set_ylabel("cummulative unique 18S maj seqs")
+        ax.set_xlabel("number of sequences")
+        plt.savefig(os.path.join(self.fig_dir, f"18S.novel.maj.seqs.svg"))
+        plt.savefig(os.path.join(self.fig_dir, f"18S.novel.maj.seqs.png"), dpi=600)
+        plt.close()
+
         foo = "bar"
 Questions()
