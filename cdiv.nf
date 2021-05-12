@@ -328,7 +328,6 @@ process make_multi_sample_host_krona{
     # Because krona automatically summates lines that are the same
     # We can simply cat together all of the krona inputs once
     # they have been per sample normalised
-    # TODO per sample, do normalisation, filter into cnidarian and three categories
     for KINPUT in *krona.input.txt
     do
     # Pull out the most abundant cnidarian sequence and give it value of 1
