@@ -77,24 +77,30 @@ class Questions:
         maj_seq_dd_path = os.path.join(self.resource_path, "maj_seq_dd.p")
         sample_to_maj_seq_dict_path = os.path.join(self.resource_path, "sample_to_maj_seq_dict.p")
         sample_to_maj_seq_name_dict_path = os.path.join(self.resource_path, "sample_to_maj_seq_name_dict.p")
-        if os.path.exists(maj_seq_dd_path) and os.path.exists(sample_to_maj_seq_dict_path) and os.path.exists(sample_to_maj_seq_name_dict_path):
+        sequence_to_tax_string_dict_path = os.path.join(self.resource_path, "sequence_to_tax_string_dict.p")
+        if os.path.exists(maj_seq_dd_path) and os.path.exists(sample_to_maj_seq_dict_path) and os.path.exists(sample_to_maj_seq_name_dict_path) and os.path.exists(sequence_to_tax_string_dict_path):
             maj_seq_dd = pickle.load(open(maj_seq_dd_path, "rb"))
             sample_to_maj_seq_dict = pickle.load(open(sample_to_maj_seq_dict_path, "rb"))
             sample_to_maj_seq_name_dict = pickle.load(open(sample_to_maj_seq_name_dict_path, "rb"))
+            sequence_to_tax_string_dict = pickle.load(open(sequence_to_tax_string_dict_path, "rb"))
         else:
             maj_seq_dd = defaultdict(int)
             sample_to_maj_seq_dict = {}
             sample_to_maj_seq_name_dict = {}
+            sequence_to_tax_string_dict = {}
             for sample, sub_dict in sample_dict.items():
                 print(f"Getting maj seq for sample {sample}")
                 maj_seq = [_[1][3] for _ in list(sorted(sub_dict.items(), key=lambda x: x[1][0], reverse=True)) if sub_dict[_[0]][2] == "Cnidaria"][0]
                 maj_seq_name = [_[0] for _ in list(sorted(sub_dict.items(), key=lambda x: x[1][0], reverse=True)) if sub_dict[_[0]][2] == "Cnidaria"][0]
+                maj_seq_tax_string = [_[1][4] for _ in list(sorted(sub_dict.items(), key=lambda x: x[1][0], reverse=True)) if sub_dict[_[0]][2] == "Cnidaria"][0]
                 maj_seq_dd[maj_seq] += 1
                 sample_to_maj_seq_dict[sample] = maj_seq
                 sample_to_maj_seq_name_dict[sample] = maj_seq_name
+                sequence_to_tax_string_dict[maj_seq] = maj_seq_tax_string
             pickle.dump(maj_seq_dd, open(maj_seq_dd_path, "wb"))
             pickle.dump(sample_to_maj_seq_dict, open(sample_to_maj_seq_dict_path, "wb"))
             pickle.dump(sample_to_maj_seq_name_dict, open(sample_to_maj_seq_name_dict_path, "wb"))
+            pickle.dump(sequence_to_tax_string_dict, open(sequence_to_tax_string_dict_path, "wb"))
 
         # plot cululative proportion of the samples covered by the sequences
         sorted_maj_seqs = sorted(maj_seq_dd.items(), key = lambda x: x[1], reverse=True)
@@ -115,7 +121,7 @@ class Questions:
         plt.close()
 
         # Next we want to make a tree or possibly a haplotype for visualisation.
-        # To make a haplotype in R we will out put a df that has the index as sample,
+        # To make a haplotype in R we will out put a df that has the sample as index,
         # the maj seq, and the taxonomy string of that seq
         haplo_df = pd.DataFrame(index=sample_list)
         haplo_df["maj_seq"] = [sample_to_maj_seq_dict[_] for _ in sample_list]
@@ -126,13 +132,22 @@ class Questions:
         # We will output a fasta that has the abundance of each of the samples built into its name
         fasta_list = []
         seq_count = 0
+        tree_df_data = [[],[],[],[]]
         for seq, abund in sorted_maj_seqs:
             fasta_list.append(f">seq{seq_count}_{abund}")
             fasta_list.append(f"{seq}")
+            tree_df_data[0].append(f"seq{seq_count}_{abund}")
+            tree_df_data[1].append(seq)
+            tree_df_data[2].append(abund)
+            tree_df_data[3].append(sequence_to_tax_string_dict[seq])
             seq_count += 1
         with open(os.path.join(self.resource_path, "18S.maj.seqs.fasta"), "w") as f:
             for line in fasta_list:
                 f.write(f"{line}\n")
+        meta_df = pd.DataFrame(list(zip(*tree_df_data[1:])), columns=["seq", "abund", "tax_string"], index=tree_df_data[0])
+        meta_df.to_csv(os.path.join(self.resource_path, "18S.maj.seqs.meta.df.csv"))
+        # To assist in visualising the tree we will also output a set of meta data
+
         
         # We'd like to what the average proportion the most abundant sequence represents in a sample
         # we can plot this up as an ordered scatter
