@@ -120,19 +120,18 @@ class Questions:
         plt.savefig(os.path.join(self.fig_dir, f"18S.cumul.prop.png"), dpi=600)
         plt.close()
 
-        # Next we want to make a tree or possibly a haplotype for visualisation.
-        # To make a haplotype in R we will out put a df that has the sample as index,
-        # the maj seq, and the taxonomy string of that seq
-        haplo_df = pd.DataFrame(index=sample_list)
-        haplo_df["maj_seq"] = [sample_to_maj_seq_dict[_] for _ in sample_list]
-        haplo_df["tax_str"] = [sample_dict[_][sample_to_maj_seq_name_dict[_]][4] for _ in sample_list]
-        haplo_df.to_csv(os.path.join(self.resource_path, "18S.haplotype.df.csv"))
-
         # We will also want to make a phylogenetic tree based on the maj 18S sequences
         # We will output a fasta that has the abundance of each of the samples built into its name
+        # We will also put out a meta info df to work with in R where we will visualize the tree
+        # and generate the taxonomic group tables.
+        # We want to add a list of samples that each sequence represents
+        # We will make a dict to do that
+        seq_seq_to_sample_list_dict = defaultdict(list)
+        for k, v in sample_to_maj_seq_dict.items():
+            seq_seq_to_sample_list_dict[v].append(k)
         fasta_list = []
         seq_count = 0
-        tree_df_data = [[],[],[],[]]
+        tree_df_data = [[],[],[],[],[]]
         for seq, abund in sorted_maj_seqs:
             fasta_list.append(f">seq{seq_count}_{abund}")
             fasta_list.append(f"{seq}")
@@ -140,16 +139,15 @@ class Questions:
             tree_df_data[1].append(seq)
             tree_df_data[2].append(abund)
             tree_df_data[3].append(sequence_to_tax_string_dict[seq])
+            tree_df_data[4].append(",".join(seq_seq_to_sample_list_dict[seq]))
             seq_count += 1
         with open(os.path.join(self.resource_path, "18S.maj.seqs.fasta"), "w") as f:
             for line in fasta_list:
                 f.write(f"{line}\n")
-        meta_df = pd.DataFrame(list(zip(*tree_df_data[1:])), columns=["seq", "abund", "tax_string"], index=tree_df_data[0])
+        meta_df = pd.DataFrame(list(zip(*tree_df_data[1:])), columns=["seq", "abund", "tax_string", "sample_list"], index=tree_df_data[0])
         meta_df.to_csv(os.path.join(self.resource_path, "18S.maj.seqs.meta.df.csv"))
-        # To assist in visualising the tree we will also output a set of meta data
-
         
-        # We'd like to what the average proportion the most abundant sequence represents in a sample
+        # We'd like to know what the average proportion the most abundant sequence represents in a sample
         # we can plot this up as an ordered scatter
         maj_rel_abund_list = []
         cnidarian_rel_abund_list = []
