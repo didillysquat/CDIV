@@ -10,6 +10,7 @@ import pickle
 from collections import defaultdict
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+from pandas.core.arrays import string_
 from pandas.io.parsers import read_csv, read_table
 plt.rcParams['svg.fonttype'] = 'none'
 import re
@@ -43,7 +44,7 @@ class Tables(QuestionsBase):
         super().__init__()
         self.tax_group_df = read_csv(os.path.join(self.resource_path, "tax.id.groups.csv"))
         self.tax_group_df = self.tax_group_df.iloc[:,1:]
-        self.tax_group_df = self.tax_group_df.set_index("tax_group_ID")
+        self.tax_group_df = self.tax_group_df.set_index("tax_ID_group")
 
         # Now we want to create the other tables
         if (
@@ -75,7 +76,7 @@ class Tables(QuestionsBase):
             # This will allow us to associate the above info to the self.tax_group_df
             self.seq_name_to_tax_group_dict = {}
             for tax_group, ser in self.tax_group_df.iterrows():
-                list_of_seq_names = ser["maj_18S_seq_list_names"].split(",")
+                list_of_seq_names = ser["maj_cnid_18S_seq_list_names"].split(",")
                 for seq_name in list_of_seq_names:
                     self.seq_name_to_tax_group_dict[seq_name] = tax_group
             # TODO get the picture URLs from somewhere.
@@ -182,8 +183,10 @@ class Tables(QuestionsBase):
         # Table one is the 'by sample' table
         # Table two is the 'by sequence' table
         
+        # a dict to save the regex outputs into
+        self.seq_seq_to_bioinf_tax = {}
+
         # By sample table
-        
         sample_id_list = []
         maj_cnid_18S_seq_seq_list = []
         maj_cnid_18S_seq_name_list = []
@@ -220,24 +223,24 @@ class Tables(QuestionsBase):
             (
                 bioinf_tax_annot_phylum, bioinf_tax_annot_class, bioinf_tax_annot_order,
                 bioinf_tax_annot_family, bioinf_tax_annot_genus, bioinf_tax_annot_species
-                ) = [self._pull_out_tax_from_tax_string(reg_ex, mmseq_tax_annot_string) for reg_ex in ["(p_[A-Za-z]+);", "(c_[A-Za-z]+);", "(o_[A-Za-z]+);", "(f_[A-Za-z]+);", "(g_[A-Za-z]+);", "(s_[A-Za-z]+ [A-Za-z]+)"]]
+                ) = [self._pull_out_tax_from_tax_string(reg_ex, mmseq_tax_annot_string) for reg_ex in ["(p_[A-Za-z]+)", "(c_[A-Za-z]+)", "(o_[A-Za-z]+)", "(f_[A-Za-z]+)", "(g_[A-Za-z]+)", "(s_[A-Za-z]+ [A-Za-z]+)"]]
             bioinf_tax_annot_phylum_list.append(bioinf_tax_annot_phylum)
             bioinf_tax_annot_class_list.append(bioinf_tax_annot_class)
             bioinf_tax_annot_order_list.append(bioinf_tax_annot_order)
             bioinf_tax_annot_family_list.append(bioinf_tax_annot_family)
             bioinf_tax_annot_genus_list.append(bioinf_tax_annot_genus)
             bioinf_tax_annot_species_list.append(bioinf_tax_annot_species)
-            
+
             tax_annotations = [bioinf_tax_annot_phylum, bioinf_tax_annot_class, bioinf_tax_annot_order, bioinf_tax_annot_family, bioinf_tax_annot_genus, bioinf_tax_annot_species]
-            tax_level_dict = {0: "phylum", 1: "class", 2: "order", 3: "family", 4: "genus", 5:"species"}
-            for i, annot in enumerate(tax_annotations):
-                lowest_tax = 0
-                if pd.isna(annot):
+            for tax_level, annot in zip(reversed(["phylum", "class", "order", "family", "genus", "species"]), reversed(tax_annotations)):
+                if not pd.isna(annot):
                     # Then the lowest level was the previous tax level
-                    bioinf_lowest_rank = tax_level_dict[i-1]
+                    bioinf_lowest_rank = tax_level
                     break
-                bioinf_lowest_rank = "species"
+                bioinf_lowest_rank = nan
             bioinf_lowest_rank_list.append(bioinf_lowest_rank)
+
+            self.seq_seq_to_bioinf_tax[seq] = [bioinf_tax_annot_phylum, bioinf_tax_annot_class, bioinf_tax_annot_order, bioinf_tax_annot_family, bioinf_tax_annot_genus, bioinf_tax_annot_species, bioinf_lowest_rank]
             
             tax_group_ID = self.seq_name_to_tax_group_dict[maj_cnid_18S_name]
             tax_group_ID_list.append(tax_group_ID)
@@ -263,21 +266,21 @@ class Tables(QuestionsBase):
             picture_URLs_list.append(picture_URLs)
 
         self.by_sample_df = pd.DataFrame()
-        self.by_sample_df ["sample-id"] = sample_id_list
+        self.by_sample_df["sample-id_source"] = sample_id_list
         self.by_sample_df["maj_cnid_18S_seq_seq"] = maj_cnid_18S_seq_seq_list
         self.by_sample_df["maj_cnid_18S_seq_name"] = maj_cnid_18S_seq_name_list
         self.by_sample_df["mmseq_tax_annot_string"] = mmseq_tax_annot_string_list
-        self.by_sample_df["bioinf_tax_annot_phylum"] = bioinf_tax_annot_phylum_list
-        self.by_sample_df["bioinf_tax_annot_class"] = bioinf_tax_annot_class_list
-        self.by_sample_df["bioinf_tax_annot_order"] = bioinf_tax_annot_order_list
-        self.by_sample_df["bioinf_tax_annot_family"] = bioinf_tax_annot_family_list
-        self.by_sample_df["bioinf_tax_annot_genus"] = bioinf_tax_annot_genus_list
-        self.by_sample_df["bioinf_tax_annot_species"] = bioinf_tax_annot_species_list
-        self.by_sample_df["bioinf_lowest_rank"] = bioinf_lowest_rank_list
-        self.by_sample_df["tax_group_ID"] = tax_group_ID_list
+        self.by_sample_df["18S_tax_annot_phylum"] = bioinf_tax_annot_phylum_list
+        self.by_sample_df["18S_tax_annot_class"] = bioinf_tax_annot_class_list
+        self.by_sample_df["18S_tax_annot_order"] = bioinf_tax_annot_order_list
+        self.by_sample_df["18S_tax_annot_family"] = bioinf_tax_annot_family_list
+        self.by_sample_df["18S_tax_annot_genus"] = bioinf_tax_annot_genus_list
+        self.by_sample_df["18S_tax_annot_species"] = bioinf_tax_annot_species_list
+        self.by_sample_df["18S_tax_annot_lowest_rank"] = bioinf_lowest_rank_list
+        self.by_sample_df["tax_ID_group"] = tax_group_ID_list
         self.by_sample_df["evidence_for_tax_ID_group"] = evidence_for_tax_ID_group_list
         self.by_sample_df["has_been_visually_IDed"] = has_been_visually_IDed_list
-        self.by_sample_df["visual_ID_based_on_sample-id"] = visual_ID_based_on_sample_id_list
+        self.by_sample_df["visual_ID_based_on_sample-id_source"] = visual_ID_based_on_sample_id_list
         self.by_sample_df["visual_tax_phylum"] = visual_tax_phylum_list
         self.by_sample_df["visual_tax_class"] = visual_tax_class_list
         self.by_sample_df["visual_tax_order"] = visual_tax_order_list
@@ -287,13 +290,86 @@ class Tables(QuestionsBase):
         self.by_sample_df["visual_tax_lowest_rank"] = visual_lowest_tax_rank_list
         self.by_sample_df["has_pictures"] = has_pictures_list
         self.by_sample_df["picture_URLs"] = picture_URLs_list
-        self.by_sample_df.set_index("sample-id", inplace=True, drop=True)
+        self.by_sample_df.set_index("sample-id_source", inplace=True, drop=True)
 
         # output the by sample df
         self.by_sample_df.to_csv(os.path.join(self.table_output_path, "by_sample_18S.tsv"), sep="\t", index=True)
         foo = "bar"
 
+        # We need the opposite of the sample_to_maj_seq_dict
+        self.maj_seq_to_sample_dict = defaultdict(list)
+        for sample, maj_seq in self.sample_to_maj_seq_dict.items():
+            self.maj_seq_to_sample_dict[maj_seq].append(sample)
         # TODO maybe get rid of the sequence name as this is just a bit confusing. We can always look up the sequence name for our own purposes.
+        # Now output the by sequence table
+        by_sequence_cols = "maj_cnid_18S_seq_seq	maj_cnid_18S_seq_name	num_samples_represented	represented_sample-id_source_list	mmseq_tax_annot_string	18S_tax_annot_phylum	18S_tax_annot_class	18S_tax_annot_order	18S_tax_annot_family	18S_tax_annot_genus	18S_tax_annot_species	18S_tax_annot_lowest_rank	tax_ID_group	evidence_for_tax_ID_group	has_been_visually_IDed	number_of_samples_visually_IDed	sample_list_visually_IDed	do_visual_IDs_agree"
+        maj_cnid_18S_seq_name_list = []
+        maj_cnid_18S_seq_seq_list = []
+        num_samples_represented_list = []
+        represented_sample_id_list_list = []
+        mmseq_tax_annot_string_list = []
+        bioinf_tax_annot_phylum_list = []
+        bioinf_tax_annot_class_list = []
+        bioinf_tax_annot_order_list = []
+        bioinf_tax_annot_family_list = []
+        bioinf_tax_annot_genus_list = []
+        bioinf_tax_annot_species_list = []
+        bioinf_lowest_rank_list = []
+        tax_group_ID_list = []
+        evidence_for_tax_ID_group_list = []
+        has_been_visually_IDed_list = []
+        number_of_samples_visually_IDed_list = []
+        sample_list_visually_IDed_list = []
+        do_visual_IDs_agree_list = []
+
+        for seq_name, tax_group in self.seq_name_to_tax_group_dict.items():
+            seq_seq = self.seq_name_to_seq_seq_dict[seq_name]
+            maj_cnid_18S_seq_name_list.append(seq_name)
+            maj_cnid_18S_seq_seq_list.append(seq_seq)
+            samples_represented = self.maj_seq_to_sample_dict[seq_seq]
+            num_samples_represented_list.append(len(samples_represented))
+            represented_sample_id_list_list.append(",".join(samples_represented))
+            mmseq_tax_annot_string_list.append(self.sequence_to_tax_string_dict[seq_seq])   
+            (bioinf_tax_annot_phylum, bioinf_tax_annot_class, bioinf_tax_annot_order, bioinf_tax_annot_family, bioinf_tax_annot_genus, bioinf_tax_annot_species, bioinf_lowest_rank) = self.seq_seq_to_bioinf_tax[seq_seq]
+            bioinf_tax_annot_phylum_list.append(bioinf_tax_annot_phylum)
+            bioinf_tax_annot_class_list.append(bioinf_tax_annot_class)
+            bioinf_tax_annot_order_list.append(bioinf_tax_annot_order)
+            bioinf_tax_annot_family_list.append(bioinf_tax_annot_family)
+            bioinf_tax_annot_genus_list.append(bioinf_tax_annot_genus)
+            bioinf_tax_annot_species_list.append(bioinf_tax_annot_species)
+            bioinf_lowest_rank_list.append(bioinf_lowest_rank)
+            tax_group_ID = self.seq_name_to_tax_group_dict[seq_name]
+            tax_group_ID_list.append(tax_group_ID)
+            evidence_for_tax_ID_group_list.append(self.tax_group_df.at[tax_group_ID, "evidence_for_tax_ID_group"])
+            has_been_visually_IDed_list.append(False)
+            number_of_samples_visually_IDed_list.append(0)
+            sample_list_visually_IDed_list.append(nan)
+            do_visual_IDs_agree_list.append(nan)
+        
+        self.by_sequence_df = pd.DataFrame()
+        self.by_sequence_df["maj_cnid_18S_seq_name"] = maj_cnid_18S_seq_name_list
+        self.by_sequence_df["maj_cnid_18S_seq_seq"] = maj_cnid_18S_seq_seq_list
+        self.by_sequence_df["num_samples_represented"] = num_samples_represented_list
+        self.by_sequence_df["represented_sample-id_source_list"] = represented_sample_id_list_list
+        self.by_sequence_df["mmseq_tax_annot_string"] = mmseq_tax_annot_string_list
+        self.by_sequence_df["18S_tax_annot_phylum"] = bioinf_tax_annot_phylum_list
+        self.by_sequence_df["18S_tax_annot_class"] = bioinf_tax_annot_class_list
+        self.by_sequence_df["18S_tax_annot_order"] = bioinf_tax_annot_order_list
+        self.by_sequence_df["18S_tax_annot_family"] = bioinf_tax_annot_family_list
+        self.by_sequence_df["18S_tax_annot_genus"] = bioinf_tax_annot_genus_list
+        self.by_sequence_df["18S_tax_annot_species"] = bioinf_tax_annot_species_list
+        self.by_sequence_df["18S_tax_annot_lowest_rank"] = bioinf_lowest_rank_list
+        self.by_sequence_df["tax_ID_group"] = tax_group_ID_list
+        self.by_sequence_df["evidence_for_tax_ID_group"] = evidence_for_tax_ID_group_list
+        self.by_sequence_df["has_been_visually_IDed"] = has_been_visually_IDed_list
+        self.by_sequence_df["number_of_samples_visually_IDed"] = number_of_samples_visually_IDed_list
+        self.by_sequence_df["sample_list_visually_IDed"] = sample_list_visually_IDed_list
+        self.by_sequence_df["do_visual_IDs_agree"] = do_visual_IDs_agree_list
+
+        self.by_sequence_df.set_index("maj_cnid_18S_seq_name", drop=True, inplace=True)
+
+        self.by_sequence_df.to_csv(os.path.join(self.table_output_path, "by_sequence_18S.tsv"), sep="\t")
+
 
     def _pull_out_tax_from_tax_string(self, reg_ex_pattern, mmseq_tax_annot_string):
         match_obj = re.search(reg_ex_pattern, mmseq_tax_annot_string)
@@ -303,7 +379,14 @@ class Tables(QuestionsBase):
                 raise RuntimeError("group contains more than 1 match")
             else:
                 # Remove the "p_" part and return
-                return group_obj[0][2:]
+                # check to see that it is not a xxx sp type of binomial and that it is not xxx environmental
+                string_to_return = group_obj[0]
+                if (" sp" in string_to_return) and ("speciosa" not in string_to_return) and ("spongiosa" not in string_to_return):
+                    return nan
+                elif "environmental" in string_to_return:
+                    return nan
+                else:
+                    return group_obj[0][2:]
         else:
             return nan
 
