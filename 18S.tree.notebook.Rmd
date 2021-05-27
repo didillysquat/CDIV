@@ -1,0 +1,326 @@
+---
+title: "Validating 18S annotations"
+output: html_notebook
+---
+We have created an 18S tree of 198 sequences.
+These sequences represent the most abundant, Cnidarian-annotated sequence from each sample.
+
+For each sample we have meta data of the sequence, the number of samples that
+sequences was found in and the taxonomic annotation string from NCBI nt.
+
+We will use treeio and ggtree to work with the tree
+```{r}
+library("treeio")
+library("ggtree")
+library("stringr")
+library("dplyr")
+library("ggplot2")
+```
+
+We processed the 18S data using the cdiv.nf nextflow pipeline hosted [here](https://github.com/didillysquat/CDIV).
+
+We output an unaligned fasta of the 198 unique most abundant
+Cnidarian-derived 18S sequences and meta data using the script questions.py also available in the above GitHub repository.
+
+We aligned the sequences using mafft:
+```mafft --auto 18S.maj.seqs.fasta > 18S.maj.seqs.aligned.fasta```
+
+We created the tree using iqtree with:
+```iqtree -s 18S.maj.seqs.aligned.fasta -m SYM+I+G4 -b 100 -nt AUTO```
+
+We will be creating a list of 'taxonomy ID groups'.
+We will populate as we work through the tree examining the groupings.
+```{r}
+tax.group.ID.list = list()
+```
+
+
+Read in the iqtree output and root at the hydrozoan/anthozoan break
+```{r}
+ggtree.18S = read.iqtree("18S.maj.seqs.aligned.fasta.treefile")
+ggtree.18S.tibble = as_tibble(ggtree.18S)
+root.node = ggtree.18S.tibble[ggtree.18S.tibble$label=="seq14_38",]["parent"]
+ggtree.18S = as.treedata(treeio::root(phy=as.phylo(ggtree.18S), node=373))
+ggtree.18S.tibble = as_tibble(ggtree.18S)
+class(ggtree.18S)
+ggtree.18S
+```
+
+Append the meta information
+```{r}
+tree_meta_df = read.csv("18S.maj.seqs.meta.df.csv", col.names = c("label", "seq", "sample_abund", "tax_string", "sample_list"))
+ggtree.18S.tibble = full_join(ggtree.18S.tibble, tree_meta_df, by="label")
+ggtree.18S = as.treedata(ggtree.18S.tibble)
+slice_head(ggtree.18S.tibble, n=10)
+```
+
+The basic tree
+```{r}
+ggtree(ggtree.18S) + geom_tiplab() + theme_tree2() + xlim(0,5)
+```
+
+
+Check to see how  many sequences have a genus annotation.
+28 of the sequences do not have genus level annotation
+```{r}
+print(str_glue("Total seqs = {length(ggtree.18S@phylo$tip.label)}"))
+gen_level = dim(ggtree.18S.tibble[grep("g_", ggtree.18S.tibble$tax_string),])[1]
+print(str_glue("Number of seqs with genus level annotation = {gen_level}"))
+```
+
+
+Create a new column called genus_all
+Create a new column called genus_top_6
+```{r}
+ggtree.18S.tibble["genus"] = str_extract(ggtree.18S.tibble$tax_string, "g_[A-Za-z]+")
+ggtree.18S.tibble["genus"] = ifelse(is.na(ggtree.18S.tibble$tax_string), ggtree.18S.tibble$tax_string, ifelse(is.na(ggtree.18S.tibble$genus), "g_Other", ggtree.18S.tibble$genus))
+genus_abund_tab = table(ggtree.18S.tibble$genus)
+ggtree.18S.tibble["genus_top_6"] = ifelse((genus_abund_tab[ggtree.18S.tibble$genus] > 5 & ggtree.18S.tibble$genus != "g_Other"), ggtree.18S.tibble$genus, NA)
+```
+
+Recreate the tree data object
+```{r}
+ggtree.18S = as.treedata(ggtree.18S.tibble)
+slice_head(ggtree.18S.tibble, n=10)
+```
+
+Colour code according to the genus group
+```{r}
+ggtree(ggtree.18S, aes(color=genus_top_6)) +
+    xlim(0, 4) + theme_tree2()
+```
+
+It is clear that Monitpora and Astreopora are good.
+They form distinct monophyletic clades.
+
+Go group by group to see if all annotations are found in the given group
+and whether there are sample in the group that are not annotated as such
+
+Notice that the sequences with the highest sample abundances
+are not in the most abundant genus
+```{r}
+ggtree(ggtree.18S, aes(color=genus_top_6)) +
+    xlim(0, 4) + theme_tree2() + geom_tippoint(aes(fill = sample_abund), shape = 21, size = 2) + scale_fill_continuous(low = 'blue', high = 'red')
+```
+
+I want to remove all of the acropora, monipora and astreopora sequences
+but first let's take a closer look at the sequences that fall within the sister group to the main acropora group
+but do not have genus annotations.
+We need to identify the label to subset from
+N.B. the nodelab is not the name of the node but rather the boot strap value (i think)
+As such we'll need to select using the tip names
+```{r}
+ggtree(ggtree.18S, aes(color=genus_top_6)) +
+    xlim(0, 5) + geom_tiplab() + theme_tree2()
+```
+
+```{r}
+acro_tree = tree_subset(tree=ggtree.18S, node="seq119_1", levels_back = 9)
+ggtree(acro_tree, aes(color=genus)) +
+    xlim(0, 4) + geom_tiplab() + theme_tree2()
+```
+OK. It looks like the other previously grey clade does have genus annotation as Isopora. Now I want to know if Isopora are anywhere else
+
+```{r}
+ggtree.18S.tibble["genus_isopora"] = ifelse(ggtree.18S.tibble$genus == "g_Isopora", "g_Isopora", ifelse(is.na(ggtree.18S.tibble$genus), ggtree.18S.tibble$genus, "g_Other"))
+ggtree.18S = as.treedata(ggtree.18S.tibble)
+ggtree(ggtree.18S, aes(color=genus_isopora)) +
+    xlim(0, 5) + geom_tiplab() + theme_tree2()
+```
+OK. Ispora looks good too.
+
+We also want to do the same check for the g_Alveopora
+```{r}
+ggtree.18S.tibble["genus_alveopora"] = ifelse(ggtree.18S.tibble$genus == "g_Alveopora", "g_Alveopora", ifelse(is.na(ggtree.18S.tibble$genus), ggtree.18S.tibble$genus, "g_Other"))
+ggtree.18S = as.treedata(ggtree.18S.tibble)
+ggtree(ggtree.18S, aes(color=genus_alveopora)) +
+    xlim(0, 4) + geom_tiplab() + theme_tree2()
+```
+OK. There is only the 1 g_Alveopora so we will need to verify this sample.
+
+
+At this point we are ready to start populating the tax.group.ID.list.
+Create  two groups for the Acropora annotated sequences, one for the main clade and one containing the 5 sequences
+```{r}
+acro_minor_seqs_df = ggtree.18S.tibble[ggtree.18S.tibble$label %in% c("seq119_1", "seq26_15", "seq165_1", "seq168_1", "seq40_8"),]
+# this will be all of the acro annotated sequences with the exception of the acro_minor_seqs
+acro_major_seqs_df = ggtree.18S.tibble[(ggtree.18S.tibble$genus == "g_Acropora") & !(ggtree.18S.tibble$label %in% acro_minor_seqs) & !(is.na(ggtree.18S.tibble$genus)),]
+ispora_seqs_df = ggtree.18S.tibble[ggtree.18S.tibble$label %in% c("seq48_7", "seq30_14", "seq72_3", "seq181_1", "seq98_2"),]
+alveopora_seqs_df = ggtree.18S.tibble[ggtree.18S.tibble$label %in% c("seq163_1"),]
+astreopora_seqs_df = ggtree.18S.tibble[(ggtree.18S.tibble$genus == "g_Astreopora") & !(is.na(ggtree.18S.tibble$genus)),]
+montipora_seqs_df = ggtree.18S.tibble[(ggtree.18S.tibble$genus == "g_Montipora") & !(is.na(ggtree.18S.tibble$genus)),]
+
+tax.group.ID.list[["acro_minor"]] = acro_minor_seqs_df
+tax.group.ID.list[["acro_major"]] = acro_major_seqs_df
+tax.group.ID.list[["ispora"]] = ispora_seqs_df
+tax.group.ID.list[["alveopora"]] = alveopora_seqs_df
+tax.group.ID.list[["astreopora"]] = astreopora_seqs_df
+tax.group.ID.list[["montipora"]] = montipora_seqs_df
+```
+
+
+The 5 genus that we drop below represent 130 sequences.
+After dropping these samples we are left with 68 sequences.
+
+At this point we can discard a large part of the tree.
+We will do this using the `drop.tip()` function.
+
+```{r}
+# Get the names that we want to drop according to the genus annotation
+drop.acro.meta.df = ggtree.18S.tibble[(!(ggtree.18S.tibble$genus %in% c("g_Acropora", "g_Isopora", "g_Alveopora", "g_Astreopora", "g_Montipora")) & !(is.na(ggtree.18S.tibble$genus))),]
+drop_ids = ggtree.18S.tibble[ggtree.18S.tibble$genus %in% c("g_Acropora", "g_Isopora", "g_Alveopora", "g_Astreopora", "g_Montipora"),]$label
+acro.drop.table = table(drop.acro.meta.df$genus)
+acro.drop.table
+```
+```{r}
+acropora.dropped.tree = drop.tip(ggtree.18S, drop_ids)
+ggtree(acropora.dropped.tree) +
+    xlim(0, 5) + geom_tiplab() + theme_tree2() + geom_tippoint(aes(fill = sample_abund), shape = 21, size = 2) + scale_fill_continuous(low = 'blue', high = 'red')
+```
+The majority of the remaining sequences either have no annotation or are the only sequence with a given genus annotation.
+However, 6 of the genera do have >1 sequence. We will look at these and we differentiate between Other and noannotation
+```{r}
+acro.drop.tibble = as_tibble(acropora.dropped.tree)
+acro.drop.tibble["acro.drop.genus"] = ifelse(acro.drop.tibble$genus == "g_Other", "no_annotation", ifelse(acro.drop.table[acro.drop.tibble$genus] > 1, acro.drop.tibble$genus, "g_Other"))
+acro.drop.tibble["acro.drop.genus"] = ifelse(is.na(acro.drop.tibble$acro.drop.genus), "NA", acro.drop.tibble$acro.drop.genus)
+acro.drop.tibble["anthozoa"] = str_extract(acro.drop.tibble$tax_string, "c_[A-Za-z]+")
+acro.drop.tibble["anthozoa"] = ifelse(is.na(acro.drop.tibble$anthozoa), "NA", acro.drop.tibble$anthozoa)
+acropora.dropped.tree = as.treedata(acro.drop.tibble)
+cols = c("g_Acanthogorgia" = "#669900", 
+         "g_Euphyllia" = "#99cc33", "g_Favites" = "#ccee66", "g_Galaxea" = "#006699",
+         "g_Other" = "#000000","g_Millepora" = "#990066","g_Coeloseris" = "#cc3399","no_annotation" = "#000000","g_Stylophora" = "#ff9900","NA" = "#3b3b3b")
+ggtree(acropora.dropped.tree, aes(color=acro.drop.genus)) + scale_color_manual(values = cols) +
+    xlim(0, 5) + geom_tiplab() + theme_tree2() + geom_tippoint(aes(fill = sample_abund), shape = 21, size = 2) + scale_fill_continuous(low = 'blue', high = 'red')
+ggtree(acropora.dropped.tree, aes(color=genus)) +
+    xlim(0, 5) + geom_tiplab() + theme_tree2() + geom_tippoint(aes(fill = sample_abund), shape = 21, size = 2) + scale_fill_continuous(low = 'blue', high = 'red')
+ggtree(acropora.dropped.tree, aes(color=anthozoa)) +
+    xlim(0, 5) + geom_tiplab() + theme_tree2() + geom_tippoint(aes(fill = sample_abund), shape = 21, size = 2) + scale_fill_continuous(low = 'blue', high = 'red')
+```
+From the above tree we will pull out the 6 Favites annotated sequences and the two sequences that fall between them (annotated to the same family) as a phylogentic evidenced taxonomy ID group.
+The 2 stylophora, and the two species in between then should be their own groups as the genus level annotations disagree (seq1_218 is annotated as pocillopora)
+The Galaxea samples are phylogentic__18S evidenced. They will be one group
+I will treat each of the Coeloseris seqs as separate taxonomy ID groups as the seq distribution is split in the phylogeny.
+I will make a group out of the two millepora sequences.
+I will a group from the 2 Euphyllia seqs
+```{r}
+favites_seqs_df = ggtree.18S.tibble[ggtree.18S.tibble$label %in% c("seq126_1", "seq49_6", "seq66_4", "seq184_1", "seq20_24", "seq110_1", "seq4_164", "seq75_3"),]
+galaxea_seqs_df = ggtree.18S.tibble[(ggtree.18S.tibble$genus == "g_Galaxea") & !(is.na(ggtree.18S.tibble$genus)),]
+millepora_seqs_df = ggtree.18S.tibble[(ggtree.18S.tibble$genus == "g_Millepora") & !(is.na(ggtree.18S.tibble$genus)),]
+euphyllia_seqs_df = ggtree.18S.tibble[(ggtree.18S.tibble$genus == "g_Euphyllia") & !(is.na(ggtree.18S.tibble$genus)),]
+
+tax.group.ID.list[["favites"]] = favites_seqs_df
+tax.group.ID.list[["galaxea"]] = galaxea_seqs_df
+tax.group.ID.list[["millepora"]] = millepora_seqs_df
+tax.group.ID.list[["euphyllia"]] = euphyllia_seqs_df
+```
+
+
+
+After those groups have been made, we will put all other sequences into their own groups
+The easiest way to do this will be to get a list of all sequences not already
+included in taxonomic ID groups we've already made and then make a list
+of those seqs that have not been included in a group yet. From this we
+will make a group from each sequence
+```{r}
+assigned.seqs = c()
+count = 0
+# make.remaining.seq.dfs = function(seq.df){
+#   # For each of the tibble objects in the tax.group.ID.list
+#   # pull out a vector of the seq names and add this to the seqs.already.ass... list
+#   # append(assigned.seqs, seq.df[["label"]])
+#   # assigned.seqs = c(assigned.seqs, seq.df[["label"]])
+#   
+#   count = count + 1
+#   print(count)
+# }
+for (seq.df in tax.group.ID.list) {
+  # print(seq.df[["label"]])
+  assigned.seqs = append(assigned.seqs, seq.df[["label"]])
+}
+print(assigned.seqs)
+unassigned.seqs = ggtree.18S.tibble[!(ggtree.18S.tibble$label %in% assigned.seqs) & !(is.na(ggtree.18S.tibble$seq)),]$label
+
+# We want to create a subset seq.df just as we did for the other tax groups
+# for these unassigned seqs. Each one will be its own df.
+for (unassigned.seq in unassigned.seqs){
+  tax.group.ID.list[[unassigned.seq]] = ggtree.18S.tibble[ggtree.18S.tibble$label == unassigned.seq,]
+}
+```
+
+Now we can start to populate the taxonomy ID groups based on the contents of the
+tax.group.ID.list
+
+This table will detail each of the 'taxonomy ID groups'
+This is a term we will use to hopefully make the visual ID of these groups as efficient as possible
+E.g. not all samples of a group necessarily need to be identified.
+If a group has 100 samples in it, and if the first 20 visually IDed 
+give the same results then I think its sufficient to have a high confidence 
+of the taxonomic ID of all of the samples in that group.
+The groups will be based on one of three lines of evidence, either:
+
+1. *18S*: All samples in the group have the same most abundant Cnidarian-annotated 18S sequence,
+
+2. *phylogenetic*: All smples in the group fall into a distinct phylogentic grouping AND some, but not all, of the samples have an informatic-based annotation. All samples that do have an informatic-based annotation to genus, have the same annotation, or
+
+3. *phylogenetic__18S*: All samples in the group fall into a distinct phylogenetic grouping AND have an informatic-based annotation to the same genus. Their most abundant Cnidarian-annottated sequences may differ.
+
+```{r}
+id.group.tab.cols = c("tax_group_ID",	"number_of_samples",	"sample_list",	"number_unique_maj_cnid_18S_seqs_in_group",	"maj_cnid_18S_seq_list_seq",	"maj_cnid_18S_seq_list_names",	"has_genus_annotation",	"genus_annotation",	"evidence_for_tax_ID_group",	"has_been_visually_IDed",	"number_of_samples_visually_IDed",	"sample_list_visually_IDed",	"do_visual_IDs_agree")
+tax.group.ID.data.list = c()
+for (seq.df.key in names(tax.group.ID.list)){
+  seq.df = tax.group.ID.list[[seq.df.key]]
+  tax.group.id = seq.df.key
+  number_of_sample = sum(seq.df$sample_abund)
+  # This is represented as one or more 
+  sample_list = paste(seq.df$sample_list, collapse=",")
+  number_unique_maj_18S_seqs_in_group = length(seq.df$seq)
+  maj_18S_seq_list_seq = paste(seq.df$seq, collapse=",")
+  maj_18S_seq_list_names = paste(seq.df$label, collapse=",")
+  # We know that there is only one genus annotation per group
+  # So we can go through each of the genus values and stop if we find one that is "g_" but not "g_Other"
+  has_genus_annotation = FALSE
+  genus_annotation = NA
+  for (gen in seq.df$genus){
+    if (grepl("g_(?!Other)", gen, perl=TRUE)) {
+      has_genus_annotation = TRUE
+      genus_annotation = gen
+      }
+  }
+
+  # evidence_for_tax_ID_group will depend on the group we are working with
+  evidence_for_tax_ID_group = switch(
+    seq.df.key,
+    "acro_minor" = "phylogenetic_18S", "acro_major" = "phylogenetic_18S",
+    "ispora" = "phylogenetic_18S", "alveopora" = "18S",
+    "astreopora" = "phylogenetic_18S", "montipora"="phylogenetic_18S",
+    "favites" = "phylogenetic", "galaxea" = "phylogenetic_18S",
+    "millepora" = "phylogenetic_18S", "euphyllia" = "phylogenetic_18S", "18S"
+    )
+  
+  has_been_visually_IDed = FALSE
+  number_of_samples_visually_IDed = 0
+  sample_list_visually_IDed = ""
+  visual_IDs_are_identical = NA
+  
+  tax.group.ID.data.list[[seq.df.key]] = c(
+    "tax_group_ID" = tax.group.id, "number_of_samples" = number_of_sample, "sample_list" = sample_list,
+    "number_unique_maj_cnid_18S_seqs_in_group" = number_unique_maj_18S_seqs_in_group, "maj_cnid_18S_seq_list_seq" = maj_18S_seq_list_seq,
+    "maj_cnid_18S_seq_list_names" = maj_18S_seq_list_names, "has_genus_annotation" = has_genus_annotation, "genus_annotation" = genus_annotation,
+    "evidence_for_tax_ID_group" = evidence_for_tax_ID_group,"picture_urls" = "", "has_been_visually_IDed" = has_been_visually_IDed,
+    "number_of_samples_visually_IDed" = number_of_samples_visually_IDed, "sample_list_visually_IDed" = sample_list_visually_IDed,
+    "do_visual_IDs_agree" = visual_IDs_are_identical
+    )
+}
+id.group.df = data.frame(do.call(rbind, tax.group.ID.data.list))
+id.group.df$number_of_samples = as.numeric(id.group.df$number_of_samples)
+id.group.df$number_unique_maj_cnid_18S_seqs_in_group = as.numeric(id.group.df$number_unique_maj_cnid_18S_seqs_in_group)
+id.group.df$has_genus_annotation = as.logical(id.group.df$has_genus_annotation)
+id.group.df$has_been_visually_IDed = as.logical(id.group.df$has_been_visually_IDed)
+id.group.df$number_of_samples_visually_IDed = as.numeric(id.group.df$number_of_samples_visually_IDed)
+id.group.df$do_visual_IDs_agree = as.logical(id.group.df$do_visual_IDs_agree)
+```
+Finally write out the df for upload into Python to produce the remaining tables
+```{r}
+write.csv(id.group.df, "tax.id.groups.csv")
+```
+
