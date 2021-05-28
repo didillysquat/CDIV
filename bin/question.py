@@ -42,11 +42,52 @@ class Tables(QuestionsBase):
     """
     def __init__(self):
         super().__init__()
-        self.tax_group_df = read_csv(os.path.join(self.resource_path, "tax.id.groups.csv"))
-        self.tax_group_df = self.tax_group_df.iloc[:,1:]
-        self.tax_group_df = self.tax_group_df.set_index("tax_ID_group")
-
+        self.tax_group_df = self._read_in_tax_group_df()
+        
         # Now we want to create the other tables
+        (
+            self.sample_dict,
+            self.maj_seq_dd,
+            self.sample_to_maj_seq_dict,
+            self.sample_to_maj_seq_name_dict,
+            self.sequence_to_tax_string_dict,
+            self.seq_name_to_seq_seq_dict,
+            self.seq_seq_to_seq_name_dict,
+            self.seq_name_to_tax_group_dict
+        ) = self._load_pickled_dicts()
+
+        # We need the opposite of the sample_to_maj_seq_dict
+        self.maj_seq_to_sample_dict = defaultdict(list)
+        for sample, maj_seq in self.sample_to_maj_seq_dict.items():
+            self.maj_seq_to_sample_dict[maj_seq].append(sample)
+
+        self.jpg_links = self._get_jpeg_links()
+
+        self.provenance_df_slimmed = self._load_slimmed_provenance_table()
+        
+        self.sample_to_pic_url_list_dict = self._make_sample_to_pic_URL_list()
+
+        self._add_pics_to_tax_group_df_and_write_out()
+        
+        # We want to produce two futher tables
+        # Table one is the 'by sample' table
+        # Table two is the 'by sequence' table
+        
+        # a dict to save the regex outputs into
+        self.seq_seq_to_bioinf_tax = {}
+
+        # By sample table
+        self._make_and_write_by_sample_table()
+
+        self._make_and_write_by_sequence_table()
+
+    def _read_in_tax_group_df(self):
+        tax_group_df = read_csv(os.path.join(self.resource_path, "tax.id.groups.csv"))
+        tax_group_df = tax_group_df.iloc[:,1:]
+        tax_group_df = tax_group_df.set_index("tax_ID_group")
+        return tax_group_df
+
+    def _load_pickled_dicts(self):
         if (
             os.path.exists(self.maj_seq_dd_path) and 
             os.path.exists(self.sample_to_maj_seq_dict_path) and 
@@ -59,31 +100,34 @@ class Tables(QuestionsBase):
             # The other dictionaries are derivatives from this dictionary
             # They key is a sample-id, the value is a dict. This dict is keys of sequence name(from the fastq) to a tuple of:
             # absolute seq abundance; relative seq abundance; seq tax assignation as Cnidaria, Symbiodiniaceae or other; the nucleotide sequence; the annotation string from mmseqs;
-            self.sample_dict = pickle.load(open(self.sample_dict_path, "rb"))
+            sample_dict = pickle.load(open(self.sample_dict_path, "rb"))
             # This is k= nucleotide sequences, v= int number of samples the seq was maj Cnidarian seq in
-            self.maj_seq_dd = pickle.load(open(self.maj_seq_dd_path, "rb"))
+            maj_seq_dd = pickle.load(open(self.maj_seq_dd_path, "rb"))
             # k = sample-id v=nucleotide seq of most abund cnidarian seq
-            self.sample_to_maj_seq_dict = pickle.load(open(self.sample_to_maj_seq_dict_path, "rb"))
+            sample_to_maj_seq_dict = pickle.load(open(self.sample_to_maj_seq_dict_path, "rb"))
             # k = sample-id v=fastq name of most abund cnidarian seq
-            self.sample_to_maj_seq_name_dict = pickle.load(open(self.sample_to_maj_seq_name_dict_path, "rb"))
+            sample_to_maj_seq_name_dict = pickle.load(open(self.sample_to_maj_seq_name_dict_path, "rb"))
             # k = nucleotide seq to 
-            self.sequence_to_tax_string_dict = pickle.load(open(self.sequence_to_tax_string_dict_path, "rb"))
+            sequence_to_tax_string_dict = pickle.load(open(self.sequence_to_tax_string_dict_path, "rb"))
             # We will generate a futher dictionary that is the seq_name to the seq_seq from the self.tax_group_df
-            self.seq_name_to_seq_seq_dict = pickle.load(open(self.seq_name_to_seq_seq_dict_path, "rb"))
+            seq_name_to_seq_seq_dict = pickle.load(open(self.seq_name_to_seq_seq_dict_path, "rb"))
             # We also want the inverse of this dict
-            self.seq_seq_to_seq_name_dict = {v: k for k, v in self.seq_name_to_seq_seq_dict.items()}
+            seq_seq_to_seq_name_dict = {v: k for k, v in seq_name_to_seq_seq_dict.items()}
             # We also want to be able to pick out which tax id group a given sequence is in
             # This will allow us to associate the above info to the self.tax_group_df
-            self.seq_name_to_tax_group_dict = {}
+            seq_name_to_tax_group_dict = {}
             for tax_group, ser in self.tax_group_df.iterrows():
                 list_of_seq_names = ser["maj_cnid_18S_seq_list_names"].split(",")
                 for seq_name in list_of_seq_names:
-                    self.seq_name_to_tax_group_dict[seq_name] = tax_group
-            # TODO get the picture URLs from somewhere.
-            
+                    seq_name_to_tax_group_dict[seq_name] = tax_group     
+            return (
+                sample_dict, maj_seq_dd, sample_to_maj_seq_dict, sample_to_maj_seq_name_dict, 
+                sequence_to_tax_string_dict, seq_name_to_seq_seq_dict, seq_seq_to_seq_name_dict, seq_name_to_tax_group_dict
+                )       
         else:
             raise RuntimeError("The pickled resources do not exist. You will need to run the Questions class to create them.")
 
+    def _get_jpeg_links(self):
         # To be able to look up the photos we need to know the sampling-design_label
         # We can look this up in the provenance table.
         # Once we have the sampling-design label, we can then look up the sample_label for the pictures that are associated with the coral sample
@@ -100,28 +144,32 @@ class Tables(QuestionsBase):
             links = [_.string for _ in soup.find_all('a') if _.string]
             jpg_links = [str(_) for _ in links if _.endswith(".jpg")]
             pickle.dump(jpg_links, open(jpg_links_pickle_path, "wb"))
+        return jpg_links
 
+    def _load_slimmed_provenance_table(self):
         # Load in the provenance table
         provenance_df_slimmed_pickle_path = os.path.join(self.resource_path, "provenance_df_slimmed.p")
         if os.path.exists(provenance_df_slimmed_pickle_path):
-            self.provenance_df_slimmed = pickle.load(open(provenance_df_slimmed_pickle_path, "rb"))
+            provenance_df_slimmed = pickle.load(open(provenance_df_slimmed_pickle_path, "rb"))
         else:
-            self.provenance_df = read_table("/home/humebc/projects/tara/cdiv/inputs/TARA-PACIFIC_samples-provenance_20200731d.txt", skiprows=[0])
+            provenance_df = read_table("/home/humebc/projects/tara/cdiv/inputs/TARA-PACIFIC_samples-provenance_20200731d.txt", skiprows=[0])
             # We will slim down this provenance df to just the sample-ids and associated image files that we are working with and then pickle out
             # To do this we will need to get a list of the sampling-design labels that correspond to the sample-id and then slim according to these.
             # This is because the associated pictures will have the same sample-design label as the samples they correspond to.
             sample_list = list(self.sample_to_maj_seq_dict.keys())
-            sampling_design_labels = list(self.provenance_df[self.provenance_df["sample-id_source"].isin(sample_list)]["sampling-design_label"].values)
-            self.provenance_df_slimmed = self.provenance_df[self.provenance_df["sampling-design_label"].isin(sampling_design_labels)]
-            self.provenance_df_slimmed.set_index("sample-id_source", drop=False, inplace=True)
-            pickle.dump(self.provenance_df_slimmed, open(provenance_df_slimmed_pickle_path, "wb"))       
-        
+            sampling_design_labels = list(provenance_df[provenance_df["sample-id_source"].isin(sample_list)]["sampling-design_label"].values)
+            provenance_df_slimmed = provenance_df[provenance_df["sampling-design_label"].isin(sampling_design_labels)]
+            provenance_df_slimmed.set_index("sample-id_source", drop=False, inplace=True)
+            pickle.dump(provenance_df_slimmed, open(provenance_df_slimmed_pickle_path, "wb")) 
+        return provenance_df_slimmed
+    
+    def _make_sample_to_pic_URL_list(self):
         # Now we can make a sample-id to URL list dict
         sample_to_pic_url_list_dict_pickle_path = os.path.join(self.resource_path, "sample_to_pic_url_list_dist.p")
         if os.path.exists(sample_to_pic_url_list_dict_pickle_path):
-            self.sample_to_pic_url_list_dict = pickle.load(open(sample_to_pic_url_list_dict_pickle_path, "rb"))
+            sample_to_pic_url_list_dict = pickle.load(open(sample_to_pic_url_list_dict_pickle_path, "rb"))
         else:
-            self.sample_to_pic_url_list_dict = defaultdict(list)
+            sample_to_pic_url_list_dict = defaultdict(list)
             missing_pictures = []
             samples_with_no_pictures = []
             salvaged_samples = []
@@ -133,10 +181,10 @@ class Tables(QuestionsBase):
                     # In this case we will manually search through the jpg list to see if we find matching pictures because it could be that pictures have been uploaded but not
                     # assigned sample names in the provenance table or something similar.
                     # NB this salvaged 13 samples.
-                    jpegs_with_name = [_ for _ in jpg_links if sampling_design_label in _]
+                    jpegs_with_name = [_ for _ in self.jpg_links if sampling_design_label in _]
                     if jpegs_with_name:
                         salvaged_samples.append(sample)
-                        self.sample_to_pic_url_list_dict[sample] = [os.path.join(self.pangea_pic_base_URL, _) for _ in jpegs_with_name]
+                        sample_to_pic_url_list_dict[sample] = [os.path.join(self.pangea_pic_base_URL, _) for _ in jpegs_with_name]
                     else:
                         samples_with_no_pictures.append(sample)
                         
@@ -144,15 +192,14 @@ class Tables(QuestionsBase):
                 for pic_sample, ser in non_sample_rows.iterrows():
                     # Check to see if the sample pic exists
                     pic_name = ser["sample_label"] + ".jpg"
-                    if pic_name in jpg_links:
-                        self.sample_to_pic_url_list_dict[sample].append(os.path.join(self.pangea_pic_base_URL, pic_name))
+                    if pic_name in self.jpg_links:
+                        sample_to_pic_url_list_dict[sample].append(os.path.join(self.pangea_pic_base_URL, pic_name))
                     else:
                         missing_pictures.append(os.path.join(self.pangea_pic_base_URL, pic_name))
+        return sample_to_pic_url_list_dict
 
-        foo = "bar"
-
+    def _add_pics_to_tax_group_df_and_write_out(self):
         # Add the picture URLs to the self.tax_group_df
-        # TODO. Also when we do the self.tax_group_df URLs, check to see how many of the tax groups don't have picture URLs. If we get lucky, it may be 0.
         # Go tax group by tax group.
         # Get the list of samples and generate the picture URL list from this.
         # also generate data for the following columns: number_samples_with_pictures	samples_with_pictures	number_samples_without_pictures	samples_without_pictures	picture_URLs
@@ -177,16 +224,9 @@ class Tables(QuestionsBase):
         self.tax_group_df["samples_without_pictures"] = samples_without_pictures_list
         self.tax_group_df["picture_URLs"] = picture_URLs_list
         # The tax_group_df is now complete so output
-        self.tax_group_df.to_csv(os.path.join(self.table_output_path, "taxonomy_groups_18S.tsv"), sep="\t")
+        self.tax_group_df.to_csv(os.path.join(self.table_output_path, "TARA_PACIFIC_CDIV_18S_host_taxonomy_by_taxonomy_id_group.tsv"), sep="\t")
 
-        # We want to produce two futher tables
-        # Table one is the 'by sample' table
-        # Table two is the 'by sequence' table
-        
-        # a dict to save the regex outputs into
-        self.seq_seq_to_bioinf_tax = {}
-
-        # By sample table
+    def _make_and_write_by_sample_table(self):
         sample_id_list = []
         maj_cnid_18S_seq_seq_list = []
         maj_cnid_18S_seq_name_list = []
@@ -293,16 +333,9 @@ class Tables(QuestionsBase):
         self.by_sample_df.set_index("sample-id_source", inplace=True, drop=True)
 
         # output the by sample df
-        self.by_sample_df.to_csv(os.path.join(self.table_output_path, "by_sample_18S.tsv"), sep="\t", index=True)
-        foo = "bar"
+        self.by_sample_df.to_csv(os.path.join(self.table_output_path, "TARA_PACIFIC_CDIV_18S_host_taxonomy_by_sample.tsv"), sep="\t", index=True)
 
-        # We need the opposite of the sample_to_maj_seq_dict
-        self.maj_seq_to_sample_dict = defaultdict(list)
-        for sample, maj_seq in self.sample_to_maj_seq_dict.items():
-            self.maj_seq_to_sample_dict[maj_seq].append(sample)
-        # TODO maybe get rid of the sequence name as this is just a bit confusing. We can always look up the sequence name for our own purposes.
-        # Now output the by sequence table
-        by_sequence_cols = "maj_cnid_18S_seq_seq	maj_cnid_18S_seq_name	num_samples_represented	represented_sample-id_source_list	mmseq_tax_annot_string	18S_tax_annot_phylum	18S_tax_annot_class	18S_tax_annot_order	18S_tax_annot_family	18S_tax_annot_genus	18S_tax_annot_species	18S_tax_annot_lowest_rank	tax_ID_group	evidence_for_tax_ID_group	has_been_visually_IDed	number_of_samples_visually_IDed	sample_list_visually_IDed	do_visual_IDs_agree"
+    def _make_and_write_by_sequence_table(self):
         maj_cnid_18S_seq_name_list = []
         maj_cnid_18S_seq_seq_list = []
         num_samples_represented_list = []
@@ -368,7 +401,7 @@ class Tables(QuestionsBase):
 
         self.by_sequence_df.set_index("maj_cnid_18S_seq_name", drop=True, inplace=True)
 
-        self.by_sequence_df.to_csv(os.path.join(self.table_output_path, "by_sequence_18S.tsv"), sep="\t")
+        self.by_sequence_df.to_csv(os.path.join(self.table_output_path, "TARA_PACIFIC_CDIV_18S_host_taxonomy_by_sequence.tsv"), sep="\t")
 
 
     def _pull_out_tax_from_tax_string(self, reg_ex_pattern, mmseq_tax_annot_string):
