@@ -17,6 +17,7 @@ import re
 from numpy import nan
 import requests
 from bs4 import BeautifulSoup
+import sys
 
 class QuestionsBase:
     def __init__(self):
@@ -65,7 +66,7 @@ class Tables(QuestionsBase):
 
         self.provenance_df_slimmed = self._load_slimmed_provenance_table()
         
-        self.sample_to_pic_url_list_dict = self._make_sample_to_pic_URL_list()
+        self.sample_to_pic_url_list_dict = self._make_sample_to_pic_URL_list_dict()
 
         self._add_pics_to_tax_group_df_and_write_out()
         
@@ -76,10 +77,70 @@ class Tables(QuestionsBase):
         # a dict to save the regex outputs into
         self.seq_seq_to_bioinf_tax = {}
 
-        # By sample table
         self._make_and_write_by_sample_table()
 
         self._make_and_write_by_sequence_table()
+        # 20210528 the table is way too big to be of use as a count table.
+        # As a result we will limit the sequences to those that were found at a relative abundance above 0.01 in one or more samples.
+        # In addition to the three above tabes
+        # we also want to output a count table of seq by sample
+        # and a table that provides the tax annotation for each seq and the category
+        # The easiest way to build these two tables will be to work from the self.sample_dict
+        # We will do 2 parses of the dict, first to get a set of all sequences and to create the sequence tax dict
+        # On the second we can fill in a count dataframes with abundances
+        seq_tax_dict_pickle_path = os.path.join(self.resource_path, "seq_tax_dict_0.001.p")
+        seq_abund_dict_pickle_path = os.path.join(self.resource_path, "seq_abund_dict_0.001.p")
+        if os.path.exists(seq_tax_dict_pickle_path) and os.path.exists(seq_abund_dict_pickle_path):
+            seq_tax_dict = pickle.load(open(seq_tax_dict_pickle_path, "rb"))
+            seq_abund_dict = pickle.load(open(seq_abund_dict_pickle_path, "rb"))
+        else:
+            seq_tax_dict = {}
+            seq_abund_dict = defaultdict(float)
+            print("making seq_tax_dict and seq_abund_dict")
+            for sample, seq_dict in self.sample_dict.items():
+                sys.stdout.write(f"\rprocessing sample {sample}")
+                for seq_name, seq_tup in seq_dict.items():
+                    if seq_tup[1] >= 0.001:
+                        seq_tax_dict[seq_tup[3]] = [seq_tup[4], seq_tup[2]]
+                        seq_abund_dict[seq_tup[3]] += seq_tup[1]
+            print("\nDone")
+            pickle.dump(seq_tax_dict, open(seq_tax_dict_pickle_path, "wb"))
+            pickle.dump(seq_abund_dict, open(seq_abund_dict_pickle_path, "wb"))
+
+        seq_list_pickle_path = os.path.join(self.resource_path, "seq_list_0.001.p")
+        if os.path.exists(seq_list_pickle_path):
+            seq_list = pickle.load(open(seq_list_pickle_path, "rb"))
+        else:
+            seq_list = [_[0] for _ in sorted(seq_abund_dict.items(), key=lambda x: x[1], reverse=True)]
+            pickle.dump(seq_list, open(seq_list_pickle_path, "wb"))
+        
+        seq_count_df_dict_pickle_path = os.path.join(self.resource_path, "seq_count_df_0.001.p")
+        if os.path.exists(seq_count_df_dict_pickle_path):
+            seq_count_df_dict = pickle.load(open(seq_count_df_dict_pickle_path, "rb"))
+        else:
+            seq_count_df_dict = {}
+            print("creating seq-count_df_dict")
+            for sample, seq_dict in self.sample_dict.items():
+                sys.stdout.write(f"\rprocessing sample {sample}")
+                seq_seq_to_abs_abund_dict = {seq_tup[3]: seq_tup[0] for seq_tup in seq_dict.values()}
+                seq_abunds = [seq_seq_to_abs_abund_dict[seq] if seq in seq_seq_to_abs_abund_dict else 0 for seq in seq_list]
+                seq_count_df_dict[sample] = seq_abunds
+            print("Done")
+            print("pickling")
+            pickle.dump(seq_count_df_dict, open(seq_count_df_dict_pickle_path, "wb"))
+            print("Done")
+        
+        seq_count_df = pd.DataFrame.from_dict(data=seq_count_df_dict, orient="index")
+        seq_count_df.sort_index(inplace=True)
+        seq_count_df.columns = seq_list
+        seq_count_df.index.name = "sample-id_source"
+        seq_count_df.to_csv(os.path.join(self.table_output_path, "TARA_PACIFIC_CDIV_18S_sequence_count_table_001_v1.tsv"), sep="\t")
+
+        seq_tax_df = pd.DataFrame.from_dict(data=seq_tax_dict, orient="index", columns=["mmseq_tax_annot_string", "tax_category"])
+        seq_tax_df.index.name = "sequence"
+        # Ensure that the seq_tax df is in the same order as the cols of the seq_count_df.
+        seq_tax_df.reindex(seq_list)
+        seq_tax_df.to_csv(os.path.join(self.table_output_path, "TARA_PACIFIC_CDIV_18S_sequence_tax_table_001_v1.tsv"), sep="\t")
 
     def _read_in_tax_group_df(self):
         tax_group_df = read_csv(os.path.join(self.resource_path, "tax.id.groups.csv"))
@@ -163,7 +224,7 @@ class Tables(QuestionsBase):
             pickle.dump(provenance_df_slimmed, open(provenance_df_slimmed_pickle_path, "wb")) 
         return provenance_df_slimmed
     
-    def _make_sample_to_pic_URL_list(self):
+    def _make_sample_to_pic_URL_list_dict(self):
         # Now we can make a sample-id to URL list dict
         sample_to_pic_url_list_dict_pickle_path = os.path.join(self.resource_path, "sample_to_pic_url_list_dist.p")
         if os.path.exists(sample_to_pic_url_list_dict_pickle_path):
@@ -224,7 +285,7 @@ class Tables(QuestionsBase):
         self.tax_group_df["samples_without_pictures"] = samples_without_pictures_list
         self.tax_group_df["picture_URLs"] = picture_URLs_list
         # The tax_group_df is now complete so output
-        self.tax_group_df.to_csv(os.path.join(self.table_output_path, "TARA_PACIFIC_CDIV_18S_host_taxonomy_by_taxonomy_id_group.tsv"), sep="\t")
+        self.tax_group_df.to_csv(os.path.join(self.table_output_path, "TARA_PACIFIC_CDIV_18S_host_taxonomy_by_taxonomy_id_group_v1.tsv"), sep="\t")
 
     def _make_and_write_by_sample_table(self):
         sample_id_list = []
@@ -331,9 +392,9 @@ class Tables(QuestionsBase):
         self.by_sample_df["has_pictures"] = has_pictures_list
         self.by_sample_df["picture_URLs"] = picture_URLs_list
         self.by_sample_df.set_index("sample-id_source", inplace=True, drop=True)
-
+        self.by_sample_df.sort_index(inplace=True)
         # output the by sample df
-        self.by_sample_df.to_csv(os.path.join(self.table_output_path, "TARA_PACIFIC_CDIV_18S_host_taxonomy_by_sample.tsv"), sep="\t", index=True)
+        self.by_sample_df.to_csv(os.path.join(self.table_output_path, "TARA_PACIFIC_CDIV_18S_host_taxonomy_by_sample_v1.tsv"), sep="\t", index=True)
 
     def _make_and_write_by_sequence_table(self):
         maj_cnid_18S_seq_name_list = []
@@ -400,8 +461,8 @@ class Tables(QuestionsBase):
         self.by_sequence_df["do_visual_IDs_agree"] = do_visual_IDs_agree_list
 
         self.by_sequence_df.set_index("maj_cnid_18S_seq_name", drop=True, inplace=True)
-
-        self.by_sequence_df.to_csv(os.path.join(self.table_output_path, "TARA_PACIFIC_CDIV_18S_host_taxonomy_by_sequence.tsv"), sep="\t")
+        self.by_sequence_df.sort_index(inplace=True)
+        self.by_sequence_df.to_csv(os.path.join(self.table_output_path, "TARA_PACIFIC_CDIV_18S_host_taxonomy_by_sequence_v1.tsv"), sep="\t")
 
 
     def _pull_out_tax_from_tax_string(self, reg_ex_pattern, mmseq_tax_annot_string):
@@ -697,5 +758,4 @@ class Questions(QuestionsBase):
         plt.close()
 
         foo = "bar"
-
 Tables()
