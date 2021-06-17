@@ -33,7 +33,7 @@ class QuestionsBase:
         self.sample_to_maj_seq_name_dict_path = os.path.join(self.resource_path, "sample_to_maj_seq_name_dict.p")
         self.sequence_to_tax_string_dict_path = os.path.join(self.resource_path, "sequence_to_tax_string_dict.p")
         self.seq_name_to_seq_seq_dict_path = os.path.join(self.resource_path, "seq_name_to_seq_seq_dict.p")
-        self.image_download_folder = "/home/humebc/projects/tara/cdiv/ecotax_upload_pics_and_tsv"
+        self.image_download_folder = "/home/humebc/projects/tara/cdiv/TARA_CDIV_ecotax_upload_pics_and_tsv"
         if not os.path.exists(self.image_download_folder):
             os.makedirs(self.image_download_folder, exist_ok=False)
         self.ecotax_import_tsv_path = os.path.join(self.image_download_folder, "ecotaxa.CDIV.upload.file.tsv")
@@ -98,8 +98,10 @@ class Tables(QuestionsBase):
                 if ser.has_pictures:
                     lat = float(self.provenance_df_slimmed.at[ind, "sampling-event_latitude_start_dd.dddddd"])
                     lon = float(self.provenance_df_slimmed.at[ind, "sampling-event_longitude_start_ddd.dddddd"])
-                    date = float(self.provenance_df_slimmed.at[ind, "sampling-event_datetime-utc_start_yyyy-mm-ddThh:mm:ssZ00"].split("T")[0].replace("-", ""))
-                    time = float(self.provenance_df_slimmed.at[ind, "sampling-event_datetime-utc_start_yyyy-mm-ddThh:mm:ssZ00"].split("T")[1].replace(":","").replace("Z",""))
+                    date = self.provenance_df_slimmed.at[ind, "sampling-event_datetime-utc_start_yyyy-mm-ddThh:mm:ssZ00"].split("T")[0].replace("-", "")
+                    time = self.provenance_df_slimmed.at[ind, "sampling-event_datetime-utc_start_yyyy-mm-ddThh:mm:ssZ00"].split("T")[1].replace(":","").replace("Z","")
+                    if len(date) != 8 or len(time) != 6:
+                        foo = "bar"
                     for rank, img_url in enumerate(ser.picture_URLs.split(',')):
                         print(f"Outputting for {img_url}")
                         img_list = []
@@ -121,19 +123,20 @@ class Tables(QuestionsBase):
                         img_list.append(time)
                         
                         # Now it just remains to download the image
-                        download_complete_file_path = os.path.join(self.image_download_folder, f"{image_name}_download_complete")
-                        if not os.path.exists(download_complete_file_path):
+                        # download_complete_file_path = os.path.join(self.image_download_folder, f"{image_name}_download_complete")
+                        if not os.path.exists(os.path.join(self.image_download_folder, image_name)):
                             # Then we have not downloaded the image
                             print(f"Downloading {image_name}")
                             with open(os.path.join(self.image_download_folder, image_name), 'wb') as f:
                                 f.write(requests.get(img_url).content)
-                            with open(download_complete_file_path, "w") as f:
-                                f.write("0")
+                            # with open(download_complete_file_path, "w") as f:
+                            #     f.write("0")
                         eco_tax_tsv_list.append(img_list)
             # Now write out the tsv file
             with open(self.ecotax_import_tsv_path, "w") as f:
                 for line in eco_tax_tsv_list:
-                    f.write("\t".join(line) + "\n")
+                    line_as_str = [str(_) for _ in line]
+                    f.write("\t".join(line_as_str) + "\n")
 
         foo = "bar"
 
