@@ -3,6 +3,7 @@ Script to answer some key quesitons about the distribution of the 18S host seque
 Question 1: From the 2400 samples, roughly how many unique most abundant host 18S sequences are there
 """
 
+from genericpath import exists
 import os
 from numpy.lib.function_base import append
 import pandas as pd
@@ -32,6 +33,10 @@ class QuestionsBase:
         self.sample_to_maj_seq_name_dict_path = os.path.join(self.resource_path, "sample_to_maj_seq_name_dict.p")
         self.sequence_to_tax_string_dict_path = os.path.join(self.resource_path, "sequence_to_tax_string_dict.p")
         self.seq_name_to_seq_seq_dict_path = os.path.join(self.resource_path, "seq_name_to_seq_seq_dict.p")
+        self.image_download_folder = "/home/humebc/projects/tara/cdiv/ecotax_upload_pics_and_tsv"
+        if not os.path.exists(self.image_download_folder):
+            os.makedirs(self.image_download_folder, exist_ok=False)
+        self.ecotax_import_tsv_path = os.path.join(self.image_download_folder, "ecotaxa.CDIV.upload.file.tsv")
 
 class Tables(QuestionsBase):
     """
@@ -78,6 +83,60 @@ class Tables(QuestionsBase):
         self.seq_seq_to_bioinf_tax = {}
 
         self._make_and_write_by_sample_table()
+
+        # TODO we need to make an upload table for ecotaxa.
+        # We will make the ecotaxa table by modifying the by sample table
+        # For full details of the required format, see: https://ecotaxa.obs-vlfr.fr/Job/Create/FileImport?p=4176
+        # Every image will have a line
+        
+        if not os.path.exists(self.ecotax_import_tsv_path):
+            print("Writing ecotax input table")
+            eco_tax_tsv_list = []
+            eco_tax_tsv_list.append(["img_file_name", "img_rank", "object_id", "object_lat", "object_long", "object_date", "object_time"])
+            eco_tax_tsv_list.append(["t", "f", "t", "f", "f", "f", "f"])
+            for ind, ser in self.by_sample_df.iterrows():
+                if ser.has_pictures:
+                    lat = float(self.provenance_df_slimmed.at[ind, "sampling-event_latitude_start_dd.dddddd"])
+                    lon = float(self.provenance_df_slimmed.at[ind, "sampling-event_longitude_start_ddd.dddddd"])
+                    date = float(self.provenance_df_slimmed.at[ind, "sampling-event_datetime-utc_start_yyyy-mm-ddThh:mm:ssZ00"].split("T")[0].replace("-", ""))
+                    time = float(self.provenance_df_slimmed.at[ind, "sampling-event_datetime-utc_start_yyyy-mm-ddThh:mm:ssZ00"].split("T")[1].replace(":","").replace("Z",""))
+                    for rank, img_url in enumerate(ser.picture_URLs.split(',')):
+                        print(f"Outputting for {img_url}")
+                        img_list = []
+                        
+                        # We need one row per image
+                        image_name = img_url.split('/')[-1]
+                        img_list.append(image_name)
+                        img_list.append(rank + 1)
+                        img_list.append(ind)
+                        
+                        # Need to get lat and lon
+                        img_list.append(lat)
+                        img_list.append(lon)
+                        
+                        # TARA date time string
+                        #date
+                        img_list.append(date)
+                        #time
+                        img_list.append(time)
+                        
+                        # Now it just remains to download the image
+                        download_complete_file_path = os.path.join(self.image_download_folder, f"{image_name}_download_complete")
+                        if not os.path.exists(download_complete_file_path):
+                            # Then we have not downloaded the image
+                            print(f"Downloading {image_name}")
+                            with open(os.path.join(self.image_download_folder, image_name), 'wb') as f:
+                                f.write(requests.get(img_url).content)
+                            with open(download_complete_file_path, "w") as f:
+                                f.write("0")
+                        eco_tax_tsv_list.append(img_list)
+            # Now write out the tsv file
+            with open(self.ecotax_import_tsv_path, "w") as f:
+                for line in eco_tax_tsv_list:
+                    f.write("\t".join(line) + "\n")
+
+        foo = "bar"
+
 
         self._make_and_write_by_sequence_table()
         # 20210528 the table is way too big to be of use as a count table.
@@ -225,6 +284,14 @@ class Tables(QuestionsBase):
         return provenance_df_slimmed
     
     def _make_sample_to_pic_URL_list_dict(self):
+        # 20210617 There appear to be a whole load of pictures missing
+        # however, we are currently only looking for the pictures that we expect to be there.
+        # We have not inspected the pictures that did not match one of the sample names
+        # we have but were in the pangea resource. We will do that now.
+        # NB in conclusion: There are loads of picture "spare" because all of the regular TaraPacific pictures
+        # are in the same directory. I also checked to see if I could see any obvious different in the name structure
+        # of the associated photos and those that are not associated, but I couldn't.
+        
         # Now we can make a sample-id to URL list dict
         sample_to_pic_url_list_dict_pickle_path = os.path.join(self.resource_path, "sample_to_pic_url_list_dist.p")
         if os.path.exists(sample_to_pic_url_list_dict_pickle_path):
@@ -234,6 +301,7 @@ class Tables(QuestionsBase):
             missing_pictures = []
             samples_with_no_pictures = []
             salvaged_samples = []
+            associated_pics = []
             for sample in self.sample_to_maj_seq_dict.keys():
                 sampling_design_label = self.provenance_df_slimmed.at[sample, "sampling-design_label"]
                 non_sample_rows = self.provenance_df_slimmed[(self.provenance_df_slimmed["sampling-design_label"] == sampling_design_label) & (self.provenance_df_slimmed["sample-id_source"] != sample)]
@@ -246,6 +314,7 @@ class Tables(QuestionsBase):
                     if jpegs_with_name:
                         salvaged_samples.append(sample)
                         sample_to_pic_url_list_dict[sample] = [os.path.join(self.pangea_pic_base_URL, _) for _ in jpegs_with_name]
+                        associated_pics.extend(jpegs_with_name)
                     else:
                         samples_with_no_pictures.append(sample)
                         
@@ -255,8 +324,14 @@ class Tables(QuestionsBase):
                     pic_name = ser["sample_label"] + ".jpg"
                     if pic_name in self.jpg_links:
                         sample_to_pic_url_list_dict[sample].append(os.path.join(self.pangea_pic_base_URL, pic_name))
+                        associated_pics.append(pic_name)
                     else:
                         missing_pictures.append(os.path.join(self.pangea_pic_base_URL, pic_name))
+            pickle.dump(sample_to_pic_url_list_dict, open(sample_to_pic_url_list_dict_pickle_path, "wb"))
+            # # Stop here to investigate how many 'spare' pictures there are.
+            # # HA HA there are loads because all of the non-CDIV samples are in the same images directory.
+            # spare_pics = [_ for _ in self.jpg_links if _ not in associated_pics]
+            # foo = "bar"
         return sample_to_pic_url_list_dict
 
     def _add_pics_to_tax_group_df_and_write_out(self):

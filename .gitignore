@@ -20,3 +20,9 @@ script_resources.vscode
 script_resources
 mapping
 tables
+TARA_PACIFIC_CDIV_18S_v1/
+hans_18S/tpac_metab_coral_R1.fasta.gz
+hans_18S/tpac_metab_coral_R2.fasta.gz
+TARA_PACIFIC_CDIV_18S_v1/.DS_Store
+TARA_PACIFIC_CDIV_18S_v1.zip
+ecotax_upload_pics_and_tsv
