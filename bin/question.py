@@ -1,10 +1,12 @@
 """
-Script to answer some key quesitons about the distribution of the 18S host sequences in the CDIV data
-Question 1: From the 2400 samples, roughly how many unique most abundant host 18S sequences are there
+Script that answers some key questions but also makes the output tables for the release.
+
+I created a second script that builds on the tables created here. It is called furtherTables.py
 """
 
 from genericpath import exists
 import os
+from turtle import color
 from numpy.lib.function_base import append
 import pandas as pd
 import pickle
@@ -19,6 +21,7 @@ from numpy import nan
 import requests
 from bs4 import BeautifulSoup
 import sys
+from PIL import Image
 
 class QuestionsBase:
     def __init__(self):
@@ -36,7 +39,53 @@ class QuestionsBase:
         self.image_download_folder = "/home/humebc/projects/tara/cdiv/TARA_CDIV_ecotax_upload_pics_and_tsv"
         if not os.path.exists(self.image_download_folder):
             os.makedirs(self.image_download_folder, exist_ok=False)
-        self.ecotax_import_tsv_path = os.path.join(self.image_download_folder, "ecotaxa.CDIV.upload.file.tsv")
+        self.ecotax_import_tsv_path = os.path.join(self.image_download_folder, "ecotaxa.CDIV.upload.file.w.more.meta.tsv")
+
+    def _read_in_tax_group_df(self):
+        tax_group_df = read_csv(os.path.join(self.resource_path, "tax.id.groups.csv"))
+        tax_group_df = tax_group_df.iloc[:,1:]
+        tax_group_df = tax_group_df.set_index("tax_ID_group")
+        return tax_group_df
+
+    def _load_pickled_dicts(self):
+        if (
+            os.path.exists(self.maj_seq_dd_path) and 
+            os.path.exists(self.sample_to_maj_seq_dict_path) and 
+            os.path.exists(self.sample_to_maj_seq_name_dict_path) and 
+            os.path.exists(self.sequence_to_tax_string_dict_path) and 
+            os.path.exists(self.sample_dict_path) and
+            os.path.exists(self.seq_name_to_seq_seq_dict_path)
+            ):
+            # This is the key dictionary that holds the sequence abundances and their meta information for every sample.
+            # The other dictionaries are derivatives from this dictionary
+            # They key is a sample-id, the value is a dict. This dict is keys of sequence name(from the fastq) to a tuple of:
+            # absolute seq abundance; relative seq abundance; seq tax assignation as Cnidaria, Symbiodiniaceae or other; the nucleotide sequence; the annotation string from mmseqs;
+            sample_dict = pickle.load(open(self.sample_dict_path, "rb"))
+            # This is k= nucleotide sequences, v= int number of samples the seq was maj Cnidarian seq in
+            maj_seq_dd = pickle.load(open(self.maj_seq_dd_path, "rb"))
+            # k = sample-id v=nucleotide seq of most abund cnidarian seq
+            sample_to_maj_seq_dict = pickle.load(open(self.sample_to_maj_seq_dict_path, "rb"))
+            # k = sample-id v=fastq name of most abund cnidarian seq
+            sample_to_maj_seq_name_dict = pickle.load(open(self.sample_to_maj_seq_name_dict_path, "rb"))
+            # k = nucleotide seq to 
+            sequence_to_tax_string_dict = pickle.load(open(self.sequence_to_tax_string_dict_path, "rb"))
+            # We will generate a futher dictionary that is the seq_name to the seq_seq from the self.tax_group_df
+            seq_name_to_seq_seq_dict = pickle.load(open(self.seq_name_to_seq_seq_dict_path, "rb"))
+            # We also want the inverse of this dict
+            seq_seq_to_seq_name_dict = {v: k for k, v in seq_name_to_seq_seq_dict.items()}
+            # We also want to be able to pick out which tax id group a given sequence is in
+            # This will allow us to associate the above info to the self.tax_group_df
+            seq_name_to_tax_group_dict = {}
+            for tax_group, ser in self.tax_group_df.iterrows():
+                list_of_seq_names = ser["maj_cnid_18S_seq_list_names"].split(",")
+                for seq_name in list_of_seq_names:
+                    seq_name_to_tax_group_dict[seq_name] = tax_group     
+            return (
+                sample_dict, maj_seq_dd, sample_to_maj_seq_dict, sample_to_maj_seq_name_dict, 
+                sequence_to_tax_string_dict, seq_name_to_seq_seq_dict, seq_seq_to_seq_name_dict, seq_name_to_tax_group_dict
+                )       
+        else:
+            raise RuntimeError("The pickled resources do not exist. You will need to run the Questions class to create them.")
 
 class Tables(QuestionsBase):
     """
@@ -84,59 +133,15 @@ class Tables(QuestionsBase):
 
         self._make_and_write_by_sample_table()
 
-        # TODO we need to make an upload table for ecotaxa.
+        # Here we make an upload table for ecotaxa.
         # We will make the ecotaxa table by modifying the by sample table
         # For full details of the required format, see: https://ecotaxa.obs-vlfr.fr/Job/Create/FileImport?p=4176
         # Every image will have a line
+        # NB image must have extension .jpeg (rather than .jpg). And 
         
-        if not os.path.exists(self.ecotax_import_tsv_path):
-            print("Writing ecotax input table")
-            eco_tax_tsv_list = []
-            eco_tax_tsv_list.append(["img_file_name", "img_rank", "object_id", "object_lat", "object_long", "object_date", "object_time"])
-            eco_tax_tsv_list.append(["t", "f", "t", "f", "f", "f", "f"])
-            for ind, ser in self.by_sample_df.iterrows():
-                if ser.has_pictures:
-                    lat = float(self.provenance_df_slimmed.at[ind, "sampling-event_latitude_start_dd.dddddd"])
-                    lon = float(self.provenance_df_slimmed.at[ind, "sampling-event_longitude_start_ddd.dddddd"])
-                    date = self.provenance_df_slimmed.at[ind, "sampling-event_datetime-utc_start_yyyy-mm-ddThh:mm:ssZ00"].split("T")[0].replace("-", "")
-                    time = self.provenance_df_slimmed.at[ind, "sampling-event_datetime-utc_start_yyyy-mm-ddThh:mm:ssZ00"].split("T")[1].replace(":","").replace("Z","")
-                    if len(date) != 8 or len(time) != 6:
-                        foo = "bar"
-                    for rank, img_url in enumerate(ser.picture_URLs.split(',')):
-                        print(f"Outputting for {img_url}")
-                        img_list = []
-                        
-                        # We need one row per image
-                        image_name = img_url.split('/')[-1]
-                        img_list.append(image_name)
-                        img_list.append(rank + 1)
-                        img_list.append(ind)
-                        
-                        # Need to get lat and lon
-                        img_list.append(lat)
-                        img_list.append(lon)
-                        
-                        # TARA date time string
-                        #date
-                        img_list.append(date)
-                        #time
-                        img_list.append(time)
-                        
-                        # Now it just remains to download the image
-                        # download_complete_file_path = os.path.join(self.image_download_folder, f"{image_name}_download_complete")
-                        if not os.path.exists(os.path.join(self.image_download_folder, image_name)):
-                            # Then we have not downloaded the image
-                            print(f"Downloading {image_name}")
-                            with open(os.path.join(self.image_download_folder, image_name), 'wb') as f:
-                                f.write(requests.get(img_url).content)
-                            # with open(download_complete_file_path, "w") as f:
-                            #     f.write("0")
-                        eco_tax_tsv_list.append(img_list)
-            # Now write out the tsv file
-            with open(self.ecotax_import_tsv_path, "w") as f:
-                for line in eco_tax_tsv_list:
-                    line_as_str = [str(_) for _ in line]
-                    f.write("\t".join(line_as_str) + "\n")
+        self._make_ecotax_table()
+
+        self._covert_mpo_to_jpg()
 
         foo = "bar"
 
@@ -203,6 +208,107 @@ class Tables(QuestionsBase):
         # Ensure that the seq_tax df is in the same order as the cols of the seq_count_df.
         seq_tax_df.reindex(seq_list)
         seq_tax_df.to_csv(os.path.join(self.table_output_path, "TARA_PACIFIC_CDIV_18S_sequence_tax_table_001_v1.tsv"), sep="\t")
+
+    def _covert_mpo_to_jpg(self):
+        # NB the downloaded pictures from pangea are in some new jpeg format
+        # where there are several images or 'frames'
+        # per image file and ecotaxa is not liking this.
+        # As such, we will read in each of the images and write them out again using pillow.
+        # This should fix the problem.
+        # I will test it using the test set first.
+        
+        for old_image in [_ for _ in os.listdir(self.image_download_folder) if _.endswith(".jpg")]:
+            print(f"Converting {old_image}")
+            if not os.path.exists(os.path.join(self.image_download_folder, "converted_to_jpeg", old_image)):
+                # open and then save each of the images
+                im = Image.open(os.path.join(self.image_download_folder, old_image))
+                im.save(os.path.join(self.image_download_folder, "converted_to_jpeg", old_image))
+        foo = "bar"
+
+    def _make_object_annotation_category(self, sample_series):
+        # Make the object_annotation_category
+        categories = ["18S_tax_annot_phylum", "18S_tax_annot_class", "18S_tax_annot_order", "18S_tax_annot_family", "18S_tax_annot_genus"]
+        tax_vals_to_join = []
+        for cat in categories:
+            if not pd.isnull(sample_series[cat]):
+                tax_vals_to_join.append(sample_series[cat])
+        return "<".join(tax_vals_to_join)
+
+    def _make_ecotax_table(self):
+        # NB the produced ecotax table seems to have 3085 data rows even though there are only 3075 photos.
+        # This is because some of the TARA_XXX sample-id_source items for which we have 18S data are from
+        # the same sampling-design_label. I.e. two ecotax objects have the same image.
+        # We are adding sample_id to the ecotax table. It will be the sample's sampling-design_label.
+        # We will also add the 18S based annotations to the samples in the object_annotation_category field
+        # the object_annotation_status will be dubious
+        if not os.path.exists(self.ecotax_import_tsv_path):
+            print("Writing ecotax input table")
+            eco_tax_tsv_list = []
+            eco_tax_tsv_list.append(["img_file_name", "img_rank", "object_id", "object_lat", "object_lon", "object_date", "object_time", "sample_id", "object_annotation_category", "object_annotation_status", "sample_maj_cnid_18S_seq_seq", "sample_maj_cnid_18S_seq_name", "sample_18S_tax_ID_group"])
+            eco_tax_tsv_list.append(["t", "f", "t", "f", "f", "f", "f", "t", "t", "t", "t", "t", "t"])
+            for ind, ser in self.by_sample_df.iterrows():
+                if ser.has_pictures:
+                    lat = float(self.provenance_df_slimmed.at[ind, "sampling-event_latitude_start_dd.dddddd"])
+                    lon = float(self.provenance_df_slimmed.at[ind, "sampling-event_longitude_start_ddd.dddddd"])
+                    date = self.provenance_df_slimmed.at[ind, "sampling-event_datetime-utc_start_yyyy-mm-ddThh:mm:ssZ00"].split("T")[0].replace("-", "")
+                    time = self.provenance_df_slimmed.at[ind, "sampling-event_datetime-utc_start_yyyy-mm-ddThh:mm:ssZ00"].split("T")[1].replace(":","").replace("Z","")
+                    sampling_design_label = self.provenance_df_slimmed.at[ind, "sampling-design_label"]
+                    object_annotation_category = self._make_object_annotation_category(sample_series=ser)
+                    object_annotation_status = 'dubious'
+                    sample_maj_cnid_18S_seq_seq = ser["maj_cnid_18S_seq_seq"]
+                    sample_maj_cnid_18S_seq_name = ser["maj_cnid_18S_seq_name"]
+                    sample_18S_tax_ID_group = ser["tax_ID_group"]
+
+
+                    if len(date) != 8 or len(time) != 6:
+                        foo = "bar"
+                    for rank, img_url in enumerate(ser.picture_URLs.split(',')):
+                        print(f"Outputting for {img_url}")
+                        img_list = []
+                        
+                        # We need one row per image
+                        image_name = img_url.split('/')[-1]
+                        img_list.append(image_name)
+                        img_list.append(rank + 1)
+                        img_list.append(ind)
+                        
+                        # Need to get lat and lon
+                        img_list.append(lat)
+                        img_list.append(lon)
+                        
+                        # TARA date time string
+                        #date
+                        img_list.append(date)
+                        #time
+                        img_list.append(time)
+                        # sample_id / sampling-design_label
+                        img_list.append(sampling_design_label)
+                        # object_annotation_category
+                        img_list.append(object_annotation_category)
+                        # object_annotation_status
+                        img_list.append(object_annotation_status)
+                        # sample_maj_cnid_18S_seq_seq
+                        img_list.append(sample_maj_cnid_18S_seq_seq)
+                        # sample_maj_cnid_18S_seq_name
+                        img_list.append(sample_maj_cnid_18S_seq_name)
+                        # sample_18S_tax_ID_group
+                        img_list.append(sample_18S_tax_ID_group)
+
+                        # Now it just remains to download the image
+                        # download_complete_file_path = os.path.join(self.image_download_folder, f"{image_name}_download_complete")
+                        if not os.path.exists(os.path.join(self.image_download_folder, image_name)):
+                            # Then we have not downloaded the image
+                            print(f"Downloading {image_name}")
+                            with open(os.path.join(self.image_download_folder, image_name), 'wb') as f:
+                                f.write(requests.get(img_url).content)
+                            # with open(download_complete_file_path, "w") as f:
+                            #     f.write("0")
+                        eco_tax_tsv_list.append(img_list)
+            # Now write out the tsv file
+            with open(self.ecotax_import_tsv_path, "w") as f:
+                for line in eco_tax_tsv_list:
+                    line_as_str = [str(_) for _ in line]
+                    f.write("\t".join(line_as_str) + "\n")
 
     def _read_in_tax_group_df(self):
         tax_group_df = read_csv(os.path.join(self.resource_path, "tax.id.groups.csv"))
@@ -785,7 +891,9 @@ class Questions(QuestionsBase):
         # pickle.dump(unique_seq_list, open(os.path.join(self.resource_path, "unique_seq_list.p"), "wb"))
         # pickle.dump(total_seq_name_list, open(os.path.join(self.resource_path, "total_seq_name_list.p"), "wb"))
 
-        # TODO a really cool figure to do would be to look at the total number of unique squences cummulatively going in order from
+
+        # 20220211 - One cool thing we could do is do an extrapolation analysis using lc_extrap from the preseq package.
+        # A really cool figure to do would be to look at the total number of unique squences cummulatively going in order from
         # of islands and then reefs within islands to see how it increases and whether we get close to a saturation
         # We can do this by going in the correct sample order and then going through each sequene and checking to see if we've already come across it
         meta_df = pd.read_csv("/home/humebc/projects/tara/cdiv/inputs/tn_map.csv")
@@ -836,4 +944,173 @@ class Questions(QuestionsBase):
         plt.close()
 
         foo = "bar"
-Tables()
+
+
+# Tables()
+
+
+class V4EighteenS:
+    """
+    A class that will be associated with the 18S V4 data that Hans has kindly provided for us
+    First job will be to work out the number of samples represented by his sequences
+
+    There are a bunch of seqs whos headers that don't have a valid TARA
+    barcode in them. I'm going to ignore these for the time being and
+    ask Hans about them.
+
+    We will concentrate on the samples that start with TARA_xxx
+    """
+    def __init__(self):
+        fwd_fasta = "/home/humebc/projects/tara/cdiv/hans_18S/tpac_metab_coral_R1.fasta"
+        barcode_list_path = "/home/humebc/projects/tara/cdiv/hans_18S/16S_barcode_list.txt"
+        sample_list = []
+        count = 0
+        with open(barcode_list_path, "r") as f:
+            barcode_list = [_.rstrip() for _ in f]
+        with open(fwd_fasta, "r") as f:
+            lines = f.readlines()
+            for line in lines:
+                if line.startswith(">TARA"):
+                    sample_name = line.split("_")[1]
+                    if sample_name not in sample_list:
+                        if sample_name in barcode_list:
+                            sample_list.append(sample_name)
+                            count += 1
+                            print(f"found {count}", end = "\r")
+        foo = "bar"
+
+class intra18S(QuestionsBase):
+    """
+    No this doesn't work. The PCs are a mess. There is one sample that is way different from all the others.
+    Then when plotting by PC2 v PC3 there are two groups, but they don't correlate to the taxonomic split of
+    Fungiina - Astrocoeniina. So at this point we don't chase this anymore.
+    
+    This will be a quick and dirty attempt to see if doing BC distances based on 18S cnidarian assemblages can
+    get us better resolution between the samples that match up to the photo identifications.
+    I have picked 65 samples that all have the same 18S analsis according to our analyses so far.
+    But they have a range of species identifications.
+    
+    I will make a big df that contains all of the sequences and relative counts, renormalize the counts
+    and then conduct a BC, PCoA and plot this up and look to see if it correlates with the picture annotations"""
+    def __init__(self):
+        super().__init__()
+        self.tax_group_df = self._read_in_tax_group_df()
+        
+        # Now we want to create the other tables
+        self.sample_dict = pickle.load(open(self.sample_dict_path, "rb"))
+
+        self.sub_sample_dict = {"TARA_CO-0002021": "Porites",
+                            "TARA_CO-0002197": "Montipora",
+                            "TARA_CO-0002832": "Porites",
+                            "TARA_CO-0002848": "Porites",
+                            "TARA_CO-0004128": "Montipora",
+                            "TARA_CO-0004164": "Psammocora",
+                            "TARA_CO-0004184": "Psammocora",
+                            "TARA_CO-0004737": "Pavona",
+                            "TARA_CO-0004689": "Porites",
+                            "TARA_CO-0004696": "Goniopora",
+                            "TARA_CO-0001129": "Porites",
+                            "TARA_CO-0001130": "Porites",
+                            "TARA_CO-0001136": "Porites",
+                            "TARA_CO-0001141": "Porites",
+                            "TARA_CO-0001152": "Porites",
+                            "TARA_CO-0001162": "Porites",
+                            "TARA_CO-0001179": "Porites",
+                            "TARA_CO-0001195": "Goniopora",
+                            "TARA_CO-0001191": "Porites",
+                            "TARA_CO-0001475": "Scleractinia",
+                            "TARA_CO-0001476": "Porites",
+                            "TARA_CO-0001482": "Porites",
+                            "TARA_CO-0001484": "Montipora",
+                            "TARA_CO-0001486": "Montipora",
+                            "TARA_CO-0001487": "Porites",
+                            "TARA_CO-0001492": "Porites",
+                            "TARA_CO-0001493": "Porites",
+                            "TARA_CO-0001494": "Porites",
+                            "TARA_CO-0001495": "Montipora",
+                            "TARA_CO-0001502": "Montipora",
+                            "TARA_CO-0001504": "Porites",
+                            "TARA_CO-0001505": "Montipora",
+                            "TARA_CO-0001512": "Porites",
+                            "TARA_CO-0001515": "Astreopora",
+                            "TARA_CO-0001518": "Porites",
+                            "TARA_CO-0001525": "Porites",
+                            "TARA_CO-0001526": "Montipora",
+                            "TARA_CO-0001528": "Porites",
+                            "TARA_CO-0001530": "Montipora",
+                            "TARA_CO-0001532": "Astreopora",
+                            "TARA_CO-0001534": "Porites",
+                            "TARA_CO-0001535": "Montipora",
+                            "TARA_CO-0001540": "Porites",
+                            "TARA_CO-0001552": "Porites",
+                            "TARA_CO-0001846": "Montipora",
+                            "TARA_CO-0001848": "Porites",
+                            "TARA_CO-0001849": "Montipora",
+                            "TARA_CO-0001856": "Porites",
+                            "TARA_CO-0001860": "Porites",
+                            "TARA_CO-0001862": "Astreopora",
+                            "TARA_CO-0001866": "Porites",
+                            "TARA_CO-0001868": "Porites",
+                            "TARA_CO-0001871": "Goniopora",
+                            "TARA_CO-0001879": "Porites",
+                            "TARA_CO-0001883": "Goniopora",
+                            "TARA_CO-0001891": "Montipora",
+                            "TARA_CO-0001897": "Porites",
+                            "TARA_CO-0001901": "Porites",
+                            "TARA_CO-0001907": "Montipora",
+                            "TARA_CO-0001912": "Montipora",
+                            "TARA_CO-0001917": "Goniopora",
+                            "TARA_CO-0001919": "Porites",
+                            "TARA_CO-1014562": "Porites",
+                            "TARA_CO-1014563": "Goniopora",
+                            "TARA_CO-1014598": "Goniopora"}
+
+        if os.path.exists("seq_df_delete_me.p"):
+            with open("seq_df_delete_me.p", "rb") as f:
+                seq_df_norm = pickle.load(f)
+        else:
+            # Do this in two passes, first one will get the list of the sequences 
+            unique_cnidarian_seqs = set()
+            for sample in self.sub_sample_dict.keys():
+                print(sample)
+                sub_dict = self.sample_dict[sample]
+                for k, v in sub_dict.items():
+                    if v[2] == "Cnidaria":
+                        unique_cnidarian_seqs.add(v[3])
+
+            # Here we have all of the sequences so we can now make a df
+            seq_df = pd.DataFrame(0.0, index=self.sub_sample_dict.keys(), columns=unique_cnidarian_seqs)
+            for sample in self.sub_sample_dict.keys():
+                print(sample)
+                sub_dict = self.sample_dict[sample]
+                for k, v in sub_dict.items():
+                    if v[2] == "Cnidaria":
+                        # Add the relative abundanc of the sequence in the correct column
+                        seq_df.at[sample, v[3]] = v[1]
+
+            
+            # Now we normalise across the rows
+            seq_df_norm = seq_df.div(seq_df.sum(axis=1), axis=0)
+            with open("seq_df_delete_me.p", "wb") as f:
+                pickle.dump(seq_df_norm, f)
+
+        # TODO annotate as Fungiina or Astrocoeniina
+
+        # Now do a braycurtis of this df to get pairwise differences
+        # from skbio.diversity.beta import pw_distances
+        from skbio.diversity import beta_diversity
+        bc_dm = beta_diversity(metric="braycurtis", counts=seq_df_norm, ids=seq_df_norm.index)
+        from skbio.stats.ordination import pcoa
+        bc_pc = pcoa(bc_dm)
+        pcs = bc_pc.samples
+        eigvals = bc_pc.eigvals / bc_pc.eigvals.sum()
+        foo = "bar"
+        fig, ax = plt.subplots(nrows=1, ncols=1)
+        col_dict = {"Porites": "red", "Montipora": "yellow", "Psammocora": "grey", "Pavona": "grey", "Goniopora": "grey", "Scleractinia": "grey", "Astreopora":"grey"}
+        ax.scatter(pcs["PC2"], pcs["PC3"], c=[col_dict[self.sub_sample_dict[_]] for _ in seq_df_norm.index])
+        plt.savefig("pc_delete.png", dpi=300)
+
+        skbio.stats.ordination.pcoa
+
+
+intra18S()

@@ -50,27 +50,6 @@ process make_oligos_file{
     """
 }
 
-// // The currently available biocontainers/mothur image is broken
-// // (make.contigs doesn't work with gzipped fastq files)
-// // Working with conda instead
-// process make_contigs_18S{
-//     tag {sample_id}
-//     container "didillysquat/mothur:v1.45.0-ubuntu_20210225"
-//     cpus 1
-
-//     input:
-//     tuple val(sample_id), path(reads), path(oligos) from ch_18S_input.take(4).combine(ch_make_contigs_oligos)
-
-//     output:
-//     tuple val(sample_id), path("${sample_id}.contigs.fasta") into ch_make_contigs_unique
-    
-//     script:
-//     """
-//     mothur "#make.contigs(ffastq=${reads[0]}, rfastq=${reads[1]}, processors=${task.cpus}, oligos=${oligos}, pdiffs=4)"
-//     mv *fastq.trim.contigs.fasta ${sample_id}.contigs.fasta
-//     """
-// }
-
 process make_contigs_18S{
     tag {sample_id}
     container "didillysquat/mothur:v1.45.0-ubuntu_20210225"
@@ -236,7 +215,7 @@ process make_mmseqs_tax_table{
     publishDir "taxonomy_tables/${sample_id}/", mode: "copy"
 
     input:
-    tuple val(sample_id), path(fasta), path(count), path(silva_db_base), path(silva_db_indices) from ch_make_mmseqs_query_dbs.combine(Channel.fromPath(params.nt_18S_path)).combine(Channel.fromPath("${params.nt_18S_path}{.,_}*").collect().map{[it]})
+    tuple val(sample_id), path(fasta), path(count), path(nt_18S_db_base), path(nt_18S_db_indices) from ch_make_mmseqs_query_dbs.combine(Channel.fromPath(params.nt_18S_path)).combine(Channel.fromPath("${params.nt_18S_path}{.,_}*").collect().map{[it]})
 
     output:
     tuple val(sample_id), path(count), path("${sample_id}.taxonomyResult.tsv") into ch_make_krona_input
@@ -248,7 +227,7 @@ process make_mmseqs_tax_table{
     # Remove the temporary directory if it already exists
     rm -r ${params.tmp_parent_dir}/${sample_id} || true
     # Do the taxonomy search
-    mmseqs taxonomy --threads ${task.cpus} --search-type 3 --tax-lineage 1 ${sample_id}.queryDB $silva_db_base ${sample_id}.taxonomyResult ${params.tmp_parent_dir}/${sample_id}
+    mmseqs taxonomy --threads ${task.cpus} --search-type 3 --tax-lineage 1 ${sample_id}.queryDB $nt_18S_db_base ${sample_id}.taxonomyResult ${params.tmp_parent_dir}/${sample_id}
     # Clean Up: Remove the temp dir
     rm -r ${params.tmp_parent_dir}/${sample_id}
     # Create the taxonomy tsv
